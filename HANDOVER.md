@@ -200,38 +200,70 @@
 
 詳細 → `docs/VERSION-BUMPING.md`
 
-- **M1 スケルトン**: PySide6 起動 + Win95 QSS + **自作タイトルバー** + 事件タブ (アクティブ強調) + **3 ペイン (Inbox / 事件フォルダ / プレビュー)** + サブフォルダタブ + フラット一覧 + ステータスバー (全てダミーデータ)
+- **M1 スケルトン (✅ 2026-05-22 完了)**: PySide6 起動 + Win95 QSS + 自作タイトルバー (14px) + 事件タブ (アクティブ強調、中央ペイン内) + 3 ペイン 1:2:2 (Inbox / 事件フォルダ / プレビュー) + 中央 sunken 枠で視覚分離 + Alt+1〜6 サブフォルダボタン + 件数バッジ + 行高 14px + ステータスバー (全てダミーデータ)
 - **M2 実ファイル接続 + プレビュー**: Inbox 監視対象フォルダの実ファイル一覧 (QFileSystemWatcher)、事件フォルダの実ファイル読込 (QFileSystemModel)、PDF/画像プレビュー (QPdfView / QPixmap)、PDF + 画像フィルタ、無視機能、サブフォルダ動的読込 (繰り上げ割当)
-- **M3 投入 + cross-case 移動**: F1〜F6 投入 (Copy → 検証 → 元削除)、rename ダイアログ + 最近使った名前、衝突自動連番、cross-case D&D Move、ステータスバー反映
-- **M4 Undo + 削除 + 履歴**: Ctrl+Z Undo (最低 10 段)、F2 名前変更、Del で OS ごみ箱 + 履歴記録、F12 投入履歴ビュー (サムネ付)、各行から個別 Undo
+- **M3 投入 + cross-case 移動**: Alt+1〜6 投入 (Copy → 検証 → 元削除)、**F2 = rename ダイアログ (Windows 標準)** + 最近使った名前、衝突自動連番、cross-case D&D Move、ステータスバー反映
+- **M4 Undo + 削除 + 履歴**: Ctrl+Z Undo (最低 10 段)、Del で OS ごみ箱 + 履歴記録、F12 投入履歴ビュー (サムネ付)、各行から個別 Undo
 - **M5 K-SystemZ 連携**: 「事件を開く」ダイアログ (Ctrl+O) で ksystemz.db RO 検索、複数事件タブ同時開き、セッション復元、フォルダ D&D で事件タブ追加 → β タグ開始
 - **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応、Explorer 右クリック「k-file で開く」シェル拡張、PyInstaller .exe + GitHub Actions ビルド、Win 機で業務並走 → v1.0 stable
+
+### M1 で確定したショートカット体系 (原仕様の F1〜F6 から変更済)
+- **Alt+1〜6**: サブフォルダ (1_文書 〜 6_訟務資料) 選択 + 投入トリガ (Inbox 選択中なら投入、未選択なら navigation)
+- **F2**: rename (Windows 標準) — M3 実装予定
+- **F5**: Inbox 更新 (Windows 標準)
+- **F12**: 投入履歴ビュー — M4 実装予定
+- **Ctrl+O**: 事件を開くダイアログ — M5 実装予定
+- **Ctrl+Z**: Undo — M4 実装予定
+- **Ctrl+Q**: 終了
 
 ---
 
 ## 7. 実装済み機能カタログ
 
-(TBD: 完成機能をここに積み増す)
+### M1 (2026-05-22 完了)
+- ✅ PySide6 6.11 / Python 3.12 起動
+- ✅ Win95 高密度 QSS (`resources/style/win95.qss`、14-16px 統一、文字ぴったり行高)
+- ✅ 自作タイトルバー (`src/ui/title_bar.py`、14px、紺色、最小化/最大化/×、startSystemMove で Wayland 対応)
+- ✅ メニューバー (ファイル/編集/表示/ヘルプ、ショートカット結線)
+- ✅ 事件タブ (`src/ui/case_pane.py` 上端、複数案件同時、アクティブ強調、× 閉じ、D&D 並替)
+- ✅ 3 ペイン splitter (1:2:2、handle 4px、ドラッグ可変)
+- ✅ Inbox ペイン (`src/ui/inbox_pane.py`、出所フィルタタブ + Name 列のみ、ダミー 7 ファイル)
+- ✅ 事件フォルダペイン (sunken 枠で視覚分離、Alt+1〜6 縦ボタン、件数バッジ、3 列ファイル一覧 Name/更新/サイズ)
+- ✅ プレビューペイン (`src/ui/preview_pane.py`、M2 までプレースホルダ)
+- ✅ ステータスバー (Inbox 件数 / Undo 段数 / 直近操作通知)
+- ✅ Alt+1〜6 押下時の投入ダミーメッセージ (Inbox 選択中 → 「X → 事件 / N_受信 (M3 で実投入)」)
+- ✅ PyInstaller spec (`k-file.spec`、--onefile、`sys._MEIPASS` 対応で resources バンドル)
+- ✅ GitHub Actions ワークフロー (`.github/workflows/build.yml`、main push で .exe artifact、v* タグで Releases)
+- ✅ GitHub 公開リポジトリ作成 (`windom21-cpu/k-file`、public、CI 分数無制限)
 
 ---
 
 ## 8. 次にやること
 
-### M1 スケルトン (再構築フェーズ — 2026-05-22 設計変更後)
-当初の M1 (投入先巨大表示・3 ペイン Inbox/プレビュー/6 ボタン) は破棄。新設計に組み直し:
+### M1 完了 (2026-05-22) → M2 へ
 
-1. `resources/style/win95.qss` 拡張 — 自作タイトルバー・事件タブ・サブフォルダタブ用スタイル追加
-2. `src/ui/title_bar.py` — Win95 風自作タイトルバー (Frameless + min/max/close + startSystemMove ドラッグ)
-3. `src/ui/inbox_pane.py` — 左 Inbox ペイン: 出所フィルタタブ + 統合一覧 (ダミー)
-4. `src/ui/case_pane.py` — 中央事件ペイン: パス + サブフォルダタブ (件数バッジ) + フラット一覧 (ダミー)
-5. `src/ui/preview_pane.py` — 右プレビューペイン (M2 まではプレースホルダ)
-6. `src/ui/main_window.py` 全面書き換え — FramelessWindowHint + タイトルバー + メニュー + 事件タブ + 3 ペイン + ステータスバー
-7. Linux 本機で起動確認 (Wayland での frameless + startSystemMove 動作確認)
+M1 終了:
+- ✅ UI / QSS / 3 ペイン構造 / CI までセット
+- ✅ GitHub repo: https://github.com/windom21-cpu/k-file (public)
+- ✅ Win 機で UI 確認用に Actions artifact から `k-file.exe` を DL 可
 
-### M1 完了後
-- GitHub リポ作成 (windom21-cpu/k-file)
-- PyInstaller spec 起草 + GitHub Actions ワークフロー初稿 (`docs/CI-CD.md`)
-- M2 着手 (実ファイル接続 + プレビュー)
+### M2 着手前に決めること (次セッション冒頭)
+1. **Inbox 監視対象パス** — Linux 本機 / Win 機で監視する実フォルダ (scan / Desktop / 作業 の実パス)
+2. **テスト用事件フォルダ** — 本機 (Linux) にダミー事件フォルダを 2-3 個作成 (例: `~/k-file-test-data/事件/R060200042 山田太郎 損害賠償/{1_文書, 2_発信, ...}/sample.pdf`)、または ksystemz の本物 DB を Linux 機に持ってくる
+3. **PDF プレビュー実装方針** — Qt 6.3+ の `QPdfView` (推奨) / 第三者ライブラリ (PyMuPDF 等)
+
+### M2 で実装する範囲
+- `core/inbox_watcher.py` — QFileSystemWatcher による Inbox 監視
+- `core/folder_scanner.py` — 事件フォルダの動的サブフォルダ取得 + `\d_.*` パターン + Alt+1〜6 繰り上げ割当
+- `infra/kfile_db.py` 初版 — SQLite (kfile.db) スキーマ作成
+- Inbox ペイン: ダミーデータを実ファイル一覧に差し替え (PDF + 画像のみフィルタ)
+- 事件ペイン: ダミーデータを実フォルダ読込に差し替え
+- プレビューペイン: QPdfView 統合 + QPixmap (画像)
+
+### M1 完了後 — 本日の区切り処理
+- ✅ GitHub リポ作成済
+- ✅ CI ワークフロー稼働中 (`gh run list` で監視)
+- ⏳ Win 機で Actions artifact から DL → UI 確認 (ユーザ作業)
 
 ---
 
@@ -289,21 +321,50 @@ k-file/
 
 ## 11. 環境セットアップ
 
+### Linux 本機 (Ubuntu 24.04 想定、開発用)
 ```bash
-# Linux 本機
-python3.11 -m venv .venv
+# 初回のみ: apt で python3-venv / python3-pip を入れる (Ubuntu 24.04 ではデフォルト未導入)
+sudo apt install -y python3-venv python3-pip
+
+# クローン + venv + 依存インストール
+cd ~/デスクトップ/k-file
+python3 -m venv .venv
 source .venv/bin/activate
-pip install pyside6 pyinstaller
+pip install -r requirements.txt
+
+# 起動
 python -m src.main
 ```
 
-Win 機側は (TBD: Win 用セットアップ手順を確立次第)。
+注意:
+- Python 3.12 を使う (k-systemz の Mac venv と揃え、CI も 3.12)
+- `requirements.txt` は `==` でピン留め (PySide6==6.11.1, pyinstaller==6.20.0)
+- Linux には MS UI Gothic が標準でない → 代替フォントで表示される。実 UI 確認は Win 機で実施
+
+### Win 機 (配布先 / 業務機)
+1. CI で生成された `k-file.exe` を GitHub Actions の artifact または Releases から DL
+2. ダブルクリックで起動 (PyInstaller --onefile のため初回展開で数秒)
+3. インストーラ不要、単一 .exe で動く
+
+### 開発用 Git 設定 (claude セッション後、ユーザ側で 1 回だけ)
+```bash
+git config --global user.name "windom21-cpu"
+git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
+```
+(初回 commit は環境変数で渡したため、以降のために設定推奨)
 
 ---
 
 ## 12. リポジトリ・配布インフラ
 
-(TBD: k-pdf3 のような二重リポ (release 専用) を採用するか、単一リポで Releases に直接 upload するか決定)
+- **URL**: https://github.com/windom21-cpu/k-file
+- **可視性**: public (CI 分数無制限のため。業務データは含まれず、コードのみのため公開可)
+- **配布方針**: 単一リポ + GitHub Releases に直接 upload (k-pdf3 のような separate releases repo は採用しない、当面)
+- **CI トリガ** (`.github/workflows/build.yml`):
+  - `main` ブランチへの push → .exe を 90 日 artifact 保存 (Actions タブから DL 可)
+  - `v*` タグ push → Release 作成 + .exe upload (β は prerelease)
+  - 手動実行 (`workflow_dispatch`) も可
+- **β / stable 区別**: v0.x.0-beta.N → prerelease、v1.0.0+ → stable
 
 ---
 
