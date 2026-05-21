@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.spec.bak
+
+# venv
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller
+*.spec.work/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local
+*.local
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Crash log / debug
+crash.log
+debug.log
+
+# Claude Code (user-local settings)
+.claude/settings.local.json

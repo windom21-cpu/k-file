@@ -1,0 +1,318 @@
+/* k-file Win95/98 高密度 QSS (r3 — 14-16px 統一)
+ * 全要素の高さをタイトルバー (14px) 付近に揃え、文字ぴったり密度。
+ */
+
+* {
+    font-family: "MS UI Gothic", "MS Gothic", "Noto Sans CJK JP", sans-serif;
+    font-size: 9pt;
+    color: #000000;
+}
+
+QMainWindow, QDialog, QWidget {
+    background-color: #C0C0C0;
+}
+
+/* ─── ボタン (16px 高に統一) ──────────────────────────────────── */
+QPushButton {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    padding: 0 8px;
+    min-height: 16px;
+    max-height: 16px;
+    min-width: 50px;
+}
+QPushButton:pressed {
+    border-top: 1px solid #808080;
+    border-left: 1px solid #808080;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+}
+QPushButton:disabled {
+    color: #808080;
+}
+
+/* ─── 入力欄 (16px 高) ───────────────────────────────────────── */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox {
+    background-color: #FFFFFF;
+    border-top: 1px solid #808080;
+    border-left: 1px solid #808080;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+    padding: 0 3px;
+    min-height: 14px;
+}
+
+/* ─── メニューバー ─────────────────────────────────────────── */
+QMenuBar {
+    background-color: #C0C0C0;
+    border-bottom: 1px solid #808080;
+    padding: 0;
+    spacing: 0;
+    min-height: 16px;
+    max-height: 16px;
+}
+QMenuBar::item {
+    padding: 1px 6px;
+    background: transparent;
+}
+QMenuBar::item:selected {
+    background-color: #000080;
+    color: #FFFFFF;
+}
+
+QMenu {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+}
+QMenu::item {
+    padding: 1px 16px;
+    min-height: 16px;
+}
+QMenu::item:selected {
+    background-color: #000080;
+    color: #FFFFFF;
+}
+
+/* ─── ステータスバー ────────────────────────────────────── */
+QStatusBar {
+    background-color: #C0C0C0;
+    border-top: 1px solid #808080;
+    min-height: 16px;
+    max-height: 16px;
+}
+QStatusBar::item {
+    border: none;
+}
+
+/* ─── 自作タイトルバー (14px) ──────────────────────────────── */
+#titleBar {
+    background-color: #000080;
+    min-height: 14px;
+    max-height: 14px;
+}
+#titleBar[inactive="true"] {
+    background-color: #808080;
+}
+#titleBarText {
+    color: #FFFFFF;
+    font-weight: bold;
+    padding-left: 3px;
+    background: transparent;
+}
+#titleBar[inactive="true"] #titleBarText {
+    color: #C0C0C0;
+}
+#titleBarBtn {
+    background-color: #C0C0C0;
+    color: #000000;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #404040;
+    border-bottom: 1px solid #404040;
+    min-width: 14px;
+    max-width: 14px;
+    min-height: 12px;
+    max-height: 12px;
+    font-weight: bold;
+    font-size: 8pt;
+    padding: 0;
+}
+#titleBarBtn:pressed {
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+}
+
+/* ─── 中央ペイン (sunken 枠で左右と視覚分離) ──────────────── */
+#casePane {
+    border-top: 2px solid #808080;
+    border-left: 2px solid #808080;
+    border-right: 2px solid #FFFFFF;
+    border-bottom: 2px solid #FFFFFF;
+    background-color: #C0C0C0;
+}
+
+/* ─── 事件タブ (中央ペイン内の上端) ───────────────────────── */
+QTabBar#caseTabBar {
+    background: transparent;
+    qproperty-drawBase: 0;
+}
+QTabBar#caseTabBar::tab {
+    background-color: #A0A0A0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #404040;
+    border-bottom: 0;
+    padding: 0 8px;
+    min-height: 14px;
+    margin-right: 1px;
+    margin-top: 2px;
+    color: #303030;
+}
+QTabBar#caseTabBar::tab:selected {
+    background-color: #000080;
+    color: #FFFFFF;
+    font-weight: bold;
+    margin-top: 0;
+    padding: 1px 8px 2px 8px;
+}
+
+/* ─── サブフォルダ・Inbox フィルタタブ ─────────────────────── */
+QTabBar#filterTabBar {
+    background: transparent;
+}
+QTabBar#filterTabBar::tab {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 0;
+    padding: 0 8px;
+    min-height: 14px;
+    margin-right: 1px;
+    margin-top: 1px;
+}
+QTabBar#filterTabBar::tab:selected {
+    background-color: #FFFFFF;
+    font-weight: bold;
+    margin-top: 0;
+    padding: 1px 8px 2px 8px;
+}
+
+/* ─── 6 分類ボタン (中央左、F1〜F6 縦並び) ─────────────────── */
+QPushButton#folderBtn {
+    text-align: left;
+    padding: 0 4px;
+    min-height: 16px;
+    max-height: 16px;
+    min-width: 110px;
+    background-color: #C0C0C0;
+}
+QPushButton#folderBtn:checked {
+    background-color: #000080;
+    color: #FFFFFF;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+}
+
+/* ─── ペイン見出し ─────────────────────────────────────────── */
+#paneHeader {
+    background-color: #C0C0C0;
+    color: #000080;
+    font-weight: bold;
+    padding: 0 3px;
+    min-height: 14px;
+    max-height: 14px;
+}
+
+/* ─── パス表示 ───────────────────────────────────────────── */
+#casePath {
+    background-color: #FFFFFF;
+    border-top: 1px solid #808080;
+    border-left: 1px solid #808080;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+    padding: 0 4px;
+    min-height: 14px;
+    max-height: 14px;
+    font-family: "MS UI Gothic", "MS Gothic", monospace;
+}
+
+/* ─── テーブル (行 14px、文字ぴったり) ──────────────────────── */
+QTableWidget, QTableView {
+    background-color: #FFFFFF;
+    alternate-background-color: #F0F0F0;
+    gridline-color: #C0C0C0;
+    border-top: 1px solid #808080;
+    border-left: 1px solid #808080;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+}
+QTableWidget::item, QTableView::item {
+    padding: 0 4px;
+    margin: 0;
+}
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: #000080;
+    color: #FFFFFF;
+}
+QHeaderView::section {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    padding: 0 4px;
+    min-height: 14px;
+    max-height: 14px;
+}
+
+/* ─── スプリッタ ──────────────────────────────────────────── */
+QSplitter::handle {
+    background-color: #808080;
+}
+QSplitter::handle:horizontal { width: 4px; }
+QSplitter::handle:vertical { height: 4px; }
+
+/* ─── プレビュー・プレースホルダ ──────────────────────────── */
+#previewPlaceholder {
+    background-color: #FFFFFF;
+    color: #808080;
+    border-top: 1px solid #808080;
+    border-left: 1px solid #808080;
+    border-right: 1px solid #FFFFFF;
+    border-bottom: 1px solid #FFFFFF;
+}
+
+/* ─── スクロールバー (細く) ─────────────────────────────── */
+QScrollBar:vertical {
+    background-color: #C0C0C0;
+    width: 12px;
+    border-left: 1px solid #808080;
+}
+QScrollBar::handle:vertical {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    min-height: 16px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    height: 12px;
+}
+QScrollBar:horizontal {
+    background-color: #C0C0C0;
+    height: 12px;
+    border-top: 1px solid #808080;
+}
+QScrollBar::handle:horizontal {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    min-width: 16px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #808080;
+    border-bottom: 1px solid #808080;
+    width: 12px;
+}
