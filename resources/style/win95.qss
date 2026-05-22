@@ -292,6 +292,22 @@ QSplitter::handle:vertical { height: 4px; }
     border-bottom: 1px solid #FFFFFF;
 }
 
+/* ─── プレビュー: 複数ページ PDF のページ送りバー ─────────── */
+#pageBar {
+    background-color: #C0C0C0;
+    border-top: 1px solid #808080;
+}
+#pageNavBtn {
+    min-width: 20px;
+    max-width: 20px;
+    min-height: 15px;
+    max-height: 15px;
+    padding: 0;
+}
+#pageLabel {
+    padding: 0 8px;
+}
+
 /* ─── スクロールバー (細く) ─────────────────────────────── */
 QScrollBar:vertical {
     background-color: #C0C0C0;

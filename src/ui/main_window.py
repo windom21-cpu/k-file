@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.infra.kfile_db import KFileDB
 from src.ui.about_dialog import AboutDialog
 from src.ui.case_pane import CasePane
 from src.ui.inbox_pane import InboxPane
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 860)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
 
+        self._inbox_count = 0
         self._build_layout()
 
     def _build_layout(self) -> None:
@@ -54,7 +56,8 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(4)
         self.splitter.setChildrenCollapsible(False)
-        self.inbox_pane = InboxPane()
+        self.db = KFileDB()
+        self.inbox_pane = InboxPane(self.db)
         self.case_pane = CasePane()
         self.preview_pane = PreviewPane()
         self.splitter.addWidget(self.inbox_pane)
@@ -72,7 +75,6 @@ class MainWindow(QMainWindow):
 
         sb = QStatusBar()
         sb.setSizeGripEnabled(False)
-        sb.showMessage("準備完了 — Inbox 7 件 / Undo 0 段")
         sb.addPermanentWidget(QSizeGrip(self))
         self.setStatusBar(sb)
 
@@ -84,6 +86,12 @@ class MainWindow(QMainWindow):
         self.case_pane.caseTabChanged.connect(self._on_case_tab_changed)
         # 右クリック投入メニューが参照する Inbox 選択ファイルの getter
         self.case_pane.set_inbox_file_getter(self.inbox_pane.selected_file_name)
+        # Inbox 件数をステータスバーに反映
+        self.inbox_pane.inboxChanged.connect(self._on_inbox_changed)
+        self._on_inbox_changed(self.inbox_pane.file_count())
+        # ファイル選択 → 右ペインでプレビュー
+        self.inbox_pane.fileSelected.connect(self.preview_pane.show_file)
+        self.case_pane.fileSelected.connect(self.preview_pane.show_file)
 
     def _build_menus(self, mb: QMenuBar) -> None:
         # M1 で実動するのは「終了」「k-file について」のみ。
@@ -115,8 +123,14 @@ class MainWindow(QMainWindow):
         # サブフォルダは Alt+1〜6 に移したので F5 は Windows 標準どおり Refresh に
         act_refresh = QAction("Inbox を更新(&R)", self)
         act_refresh.setShortcut(QKeySequence("F5"))
-        act_refresh.setEnabled(False)  # M2 で実装
+        act_refresh.triggered.connect(lambda: self.inbox_pane.refresh())
         m_view.addAction(act_refresh)
+        act_show_ignored = QAction("無視したファイルも表示(&I)", self)
+        act_show_ignored.setCheckable(True)
+        act_show_ignored.toggled.connect(
+            lambda on: self.inbox_pane.set_show_ignored(on)
+        )
+        m_view.addAction(act_show_ignored)
         # F2 は M3 で「選択中ファイルをリネーム」に充てる予定 (Windows 標準)
 
         # ツールメニュー: 設定 (Inbox 監視パス・ksystemz.db パス等) の入口。
@@ -133,6 +147,15 @@ class MainWindow(QMainWindow):
 
     def _on_about(self) -> None:
         AboutDialog(self).exec()
+
+    def _on_inbox_changed(self, count: int) -> None:
+        self._inbox_count = count
+        self._update_idle_status()
+
+    def _update_idle_status(self) -> None:
+        self.statusBar().showMessage(
+            f"準備完了 — Inbox {self._inbox_count} 件 / Undo 0 段"
+        )
 
     def _on_case_tab_changed(self, idx: int, code: str, name: str) -> None:
         self.statusBar().showMessage(f"事件タブ切替 → {code}  {name}", 3000)
