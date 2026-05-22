@@ -4,7 +4,8 @@
 - 中央ペインに sunken 枠で視覚分離
 - 1:2:2 比率
 - 全要素の高さ統一 (≈ 14-16px)
-- F1〜F6 押下時 (CasePane.subfolderInvoked 経由) で main_window がステータス通知
+- サブフォルダ操作: 左クリック=閲覧 / Alt+1〜6・右クリック=投入。
+  CasePane の subfolderBrowsed / subfolderInjectRequested を受けてステータス通知
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.about_dialog import AboutDialog
 from src.ui.case_pane import CasePane
 from src.ui.inbox_pane import InboxPane
 from src.ui.preview_pane import PreviewPane
@@ -75,13 +77,22 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
 
         # シグナル接続
-        self.case_pane.subfolderInvoked.connect(self._on_subfolder_invoked)
+        self.case_pane.subfolderBrowsed.connect(self._on_subfolder_browsed)
+        self.case_pane.subfolderInjectRequested.connect(
+            self._on_subfolder_inject_requested
+        )
         self.case_pane.caseTabChanged.connect(self._on_case_tab_changed)
+        # 右クリック投入メニューが参照する Inbox 選択ファイルの getter
+        self.case_pane.set_inbox_file_getter(self.inbox_pane.selected_file_name)
 
     def _build_menus(self, mb: QMenuBar) -> None:
+        # M1 で実動するのは「終了」「k-file について」のみ。
+        # M2〜M5 で実装する項目は disabled (グレーアウト) で配置し、
+        # 各マイルストーンで setEnabled(True) + slot 結線していく。
         m_file = mb.addMenu("ファイル(&F)")
         act_open_case = QAction("事件を開く(&O)…", self)
         act_open_case.setShortcut(QKeySequence("Ctrl+O"))
+        act_open_case.setEnabled(False)  # M5 で実装
         m_file.addAction(act_open_case)
         m_file.addSeparator()
         act_quit = QAction("終了(&X)", self)
@@ -92,26 +103,45 @@ class MainWindow(QMainWindow):
         m_edit = mb.addMenu("編集(&E)")
         act_undo = QAction("元に戻す(&U)", self)
         act_undo.setShortcut(QKeySequence("Ctrl+Z"))
+        act_undo.setEnabled(False)  # M4 で実装
         m_edit.addAction(act_undo)
         m_edit.addSeparator()
         act_history = QAction("投入履歴(&H)…", self)
         act_history.setShortcut(QKeySequence("F12"))
+        act_history.setEnabled(False)  # M4 で実装
         m_edit.addAction(act_history)
 
         m_view = mb.addMenu("表示(&V)")
         # サブフォルダは Alt+1〜6 に移したので F5 は Windows 標準どおり Refresh に
         act_refresh = QAction("Inbox を更新(&R)", self)
         act_refresh.setShortcut(QKeySequence("F5"))
+        act_refresh.setEnabled(False)  # M2 で実装
         m_view.addAction(act_refresh)
         # F2 は M3 で「選択中ファイルをリネーム」に充てる予定 (Windows 標準)
 
+        # ツールメニュー: 設定 (Inbox 監視パス・ksystemz.db パス等) の入口。
+        # 将来「フォルダ整合チェック」「履歴の掃除」等もここへ集約する。
+        m_tools = mb.addMenu("ツール(&T)")
+        act_settings = QAction("設定(&S)…", self)
+        act_settings.setEnabled(False)  # M2 で実装
+        m_tools.addAction(act_settings)
+
         m_help = mb.addMenu("ヘルプ(&H)")
-        m_help.addAction(QAction("k-file について(&A)", self))
+        act_about = QAction("k-file について(&A)", self)
+        act_about.triggered.connect(self._on_about)
+        m_help.addAction(act_about)
+
+    def _on_about(self) -> None:
+        AboutDialog(self).exec()
 
     def _on_case_tab_changed(self, idx: int, code: str, name: str) -> None:
         self.statusBar().showMessage(f"事件タブ切替 → {code}  {name}", 3000)
 
-    def _on_subfolder_invoked(self, idx: int, folder_name: str) -> None:
+    def _on_subfolder_browsed(self, idx: int, folder_name: str) -> None:
+        code, _ = self.case_pane.current_case()
+        self.statusBar().showMessage(f"{code} / {folder_name} を表示", 2000)
+
+    def _on_subfolder_inject_requested(self, idx: int, folder_name: str) -> None:
         code, _ = self.case_pane.current_case()
         inbox_file = self.inbox_pane.selected_file_name()
         if inbox_file:
@@ -120,5 +150,5 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(
-                f"サブフォルダ → {code} / {folder_name} (Inbox 未選択)", 3000
+                "投入する Inbox ファイルが未選択です", 3000
             )

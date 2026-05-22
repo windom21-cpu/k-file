@@ -1,4 +1,4 @@
-"""左 Inbox ペイン (ヘッダー撤去版 — 上端から内容)"""
+"""左 Inbox ペイン (ペインタイトル + 出所フィルタタブ + ファイル一覧)"""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from src.ui.pane_header import PaneHeader
 
 DUMMY_INBOX: list[tuple[str, str]] = [
     ("scan_001.pdf", "scan"),
@@ -31,7 +33,10 @@ class InboxPane(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # 上端: フィルタタブ (ヘッダー撤去)
+        # 上端: ペインタイトル (見出し + 彫り込み下線。3 ペイン共通)
+        outer.addWidget(PaneHeader("INBOX"))
+
+        # 出所フィルタタブ
         self.filter_tabs = QTabBar()
         self.filter_tabs.setObjectName("filterTabBar")
         self.filter_tabs.setDrawBase(False)

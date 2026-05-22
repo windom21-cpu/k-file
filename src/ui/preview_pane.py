@@ -7,18 +7,20 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from src.ui.pane_header import PaneHeader
+
 
 class PreviewPane(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
+        # spacing=0: 見出し下の余白は PaneHeader に内蔵済み (3 ペイン共通)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
+        outer.setSpacing(0)
 
-        header = QLabel("プレビュー")
-        header.setObjectName("paneHeader")
-        outer.addWidget(header)
+        # 上端: ペインタイトル (見出し + 彫り込み下線。3 ペイン共通)
+        outer.addWidget(PaneHeader("プレビュー"))
 
         placeholder = QLabel("(PDF / 画像プレビューは M2 で実装)")
         placeholder.setObjectName("previewPlaceholder")

@@ -46,13 +46,16 @@ QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox {
 }
 
 /* ─── メニューバー ─────────────────────────────────────────── */
+/* 高さは固定せず範囲を与える: min==max で 1 値固定すると項目の自然高が
+ * バー高を超え、Qt が全項目をオーバーフロー (») に追い出してバーが空に
+ * なる。範囲 16-20px なら自然サイズ 18px に落ち着き項目が正しく並ぶ。 */
 QMenuBar {
     background-color: #C0C0C0;
     border-bottom: 1px solid #808080;
     padding: 0;
     spacing: 0;
     min-height: 16px;
-    max-height: 16px;
+    max-height: 20px;
 }
 QMenuBar::item {
     padding: 1px 6px;
@@ -77,6 +80,15 @@ QMenu::item {
 QMenu::item:selected {
     background-color: #000080;
     color: #FFFFFF;
+}
+/* QSS で ::item を一度でも指定すると無効項目が自動でグレーにならないため
+ * 明示する (Win95 風: 灰 #808080)。M2〜M5 で実装するまで disabled 表示。 */
+QMenu::item:disabled {
+    color: #808080;
+}
+QMenu::item:selected:disabled {
+    background-color: #000080;
+    color: #C0C0C0;
 }
 
 /* ─── ステータスバー ────────────────────────────────────── */
@@ -130,12 +142,12 @@ QStatusBar::item {
     border-bottom: 1px solid #FFFFFF;
 }
 
-/* ─── 中央ペイン (sunken 枠で左右と視覚分離) ──────────────── */
+/* ─── 中央ペイン (左右の sunken 縦枠で隣ペインと視覚分離) ──── */
+/* 上下の枠は撤去: 見出し (PaneHeader) の彫り込み線が上端の
+ * 区切りを担うため不要になった。左右の縦枠のみ残す。 */
 #casePane {
-    border-top: 2px solid #808080;
     border-left: 2px solid #808080;
     border-right: 2px solid #FFFFFF;
-    border-bottom: 2px solid #FFFFFF;
     background-color: #C0C0C0;
 }
 
@@ -212,6 +224,13 @@ QPushButton#folderBtn:checked {
     padding: 0 3px;
     min-height: 14px;
     max-height: 14px;
+}
+/* Win95 彫り込み線 (上 1px 暗 + 下 1px 明)。ペイン見出しの下線と
+ * About ダイアログの区切り線で共用。高さ 2px は生成側で固定。 */
+#etchedLine {
+    background: transparent;
+    border-top: 1px solid #808080;
+    border-bottom: 1px solid #FFFFFF;
 }
 
 /* ─── パス表示 ───────────────────────────────────────────── */
@@ -315,4 +334,32 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     border-right: 1px solid #808080;
     border-bottom: 1px solid #808080;
     width: 12px;
+}
+
+/* ─── バージョン情報ダイアログ (Win95/98 風) ─────────────── */
+/* Frameless ウインドウの外周は Win95 の raised 枠 (明=左上 / 暗=右下) */
+#aboutDialog {
+    background-color: #C0C0C0;
+    border-top: 2px solid #FFFFFF;
+    border-left: 2px solid #FFFFFF;
+    border-right: 2px solid #808080;
+    border-bottom: 2px solid #808080;
+}
+/* アプリアイコン代替: 紺地に白「k」の小タイル */
+#aboutIcon {
+    background-color: #000080;
+    color: #FFFFFF;
+    font-size: 19pt;
+    font-weight: bold;
+    border: 1px solid #000000;
+}
+#aboutAppName {
+    font-weight: bold;
+}
+/* 区切り線は #etchedLine (ペイン見出しと共用) を使う */
+/* ダイアログの OK ボタンは本体より少し大きめ (押しやすさ優先) */
+#aboutOkBtn {
+    min-height: 19px;
+    max-height: 19px;
+    min-width: 66px;
 }

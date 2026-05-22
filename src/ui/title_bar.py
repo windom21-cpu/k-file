@@ -15,10 +15,12 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 
 class TitleBar(QWidget):
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, minimal: bool = False) -> None:
+        """minimal=True でダイアログ用 (最小化/最大化を出さず × ボタンのみ)。"""
         super().__init__(parent)
         self.setObjectName("titleBar")
         self.setFixedHeight(14)
+        self._minimal = minimal
         # QSS background-color を素の QWidget に効かせるため
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -30,11 +32,15 @@ class TitleBar(QWidget):
         self.title_label.setObjectName("titleBarText")
         layout.addWidget(self.title_label, stretch=1)
 
-        self.btn_min = self._make_btn("_", self._on_minimize)
-        self.btn_max = self._make_btn("□", self._on_toggle_max)
+        # minimal (ダイアログ用) は最小化/最大化を出さず × ボタンのみ
+        self.btn_min = None
+        self.btn_max = None
+        if not minimal:
+            self.btn_min = self._make_btn("_", self._on_minimize)
+            self.btn_max = self._make_btn("□", self._on_toggle_max)
+            layout.addWidget(self.btn_min)
+            layout.addWidget(self.btn_max)
         self.btn_close = self._make_btn("✕", self._on_close)
-        layout.addWidget(self.btn_min)
-        layout.addWidget(self.btn_max)
         layout.addWidget(self.btn_close)
 
         parent.installEventFilter(self)
@@ -50,6 +56,8 @@ class TitleBar(QWidget):
         self.window().showMinimized()
 
     def _on_toggle_max(self) -> None:
+        if self.btn_max is None:  # minimal (ダイアログ) では無効
+            return
         win = self.window()
         if win.isMaximized():
             win.showNormal()
@@ -74,7 +82,7 @@ class TitleBar(QWidget):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        if not self._minimal and event.button() == Qt.MouseButton.LeftButton:
             self._on_toggle_max()
             event.accept()
             return
