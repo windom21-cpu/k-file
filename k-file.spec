@@ -10,6 +10,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('resources/style/win95.qss', 'resources/style'),
+        ('resources/icons', 'resources/icons'),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -41,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='resources/icon.ico',  # アイコン未準備、M6 で追加
+    icon='resources/icons/favicon.ico',
 )

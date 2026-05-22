@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -49,10 +50,12 @@ class AboutDialog(QDialog):
         # アイコン枠 + アプリ名/説明 (Win95 about の定番レイアウト)
         top = QHBoxLayout()
         top.setSpacing(11)
-        icon = QLabel("k")
-        icon.setObjectName("aboutIcon")
+        icon = QLabel()
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setFixedSize(38, 38)
+        icon.setFixedSize(40, 40)
+        _app = QApplication.instance()
+        if _app is not None:
+            icon.setPixmap(_app.windowIcon().pixmap(36, 36))
         top.addWidget(icon, alignment=Qt.AlignmentFlag.AlignTop)
 
         text_col = QVBoxLayout()
@@ -60,7 +63,7 @@ class AboutDialog(QDialog):
         app_name = QLabel("k-file — 案件ドキュメント作業台")
         app_name.setObjectName("aboutAppName")
         text_col.addWidget(app_name)
-        text_col.addWidget(QLabel("バージョン M1 (スケルトン)"))
+        text_col.addWidget(QLabel("バージョン M2 (実ファイル接続 + プレビュー)"))
         text_col.addWidget(QLabel("法律実務向け 2/3 ペイン型ファイラー"))
         text_col.addStretch(1)
         top.addLayout(text_col, stretch=1)

@@ -361,14 +361,6 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     border-right: 2px solid #808080;
     border-bottom: 2px solid #808080;
 }
-/* アプリアイコン代替: 紺地に白「k」の小タイル */
-#aboutIcon {
-    background-color: #000080;
-    color: #FFFFFF;
-    font-size: 19pt;
-    font-weight: bold;
-    border: 1px solid #000000;
-}
 #aboutAppName {
     font-weight: bold;
 }

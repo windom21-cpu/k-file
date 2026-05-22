@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QWidget,
+)
 
 
 class TitleBar(QWidget):
@@ -27,6 +33,20 @@ class TitleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(1)
+
+        # アプリアイコン (Win95 のシステムメニューアイコン位置)。
+        # WA_TransparentForMouseEvents でアイコン上からでもドラッグ移動可。
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("titleBarIcon")
+        self.icon_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
+        app = QApplication.instance()
+        if app is not None:
+            pm = app.windowIcon().pixmap(12, 12)
+            if not pm.isNull():
+                self.icon_label.setPixmap(pm)
+        layout.addWidget(self.icon_label)
 
         self.title_label = QLabel("k-file — 案件ドキュメント作業台")
         self.title_label.setObjectName("titleBarText")

@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from src.ui.main_window import MainWindow
@@ -25,12 +26,25 @@ def _load_stylesheet() -> str:
     return qss_path.read_text(encoding="utf-8")
 
 
+def _app_icon() -> QIcon:
+    """アプリアイコン (タスクバー / Alt+Tab / 各ウインドウ)。
+
+    複数サイズの PNG を addFile して、用途に応じた解像度を Qt に選ばせる。
+    """
+    icon = QIcon()
+    icons_dir = _base_path() / "resources" / "icons"
+    for png in sorted(icons_dir.glob("favicon-*.png")):
+        icon.addFile(str(png))
+    return icon
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("k-file")
     app.setOrganizationName("k-file")
     app.setStyle("Windows")  # Fusion / windowsvista を避けて Win95 寄りに固定
     app.setStyleSheet(_load_stylesheet())
+    app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
     window = MainWindow()
     window.show()
