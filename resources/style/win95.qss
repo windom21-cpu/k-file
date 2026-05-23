@@ -91,6 +91,44 @@ QMenu::item:selected:disabled {
     color: #C0C0C0;
 }
 
+/* ─── 中央コマンドストリップ (Inbox と参照フォルダの間、縦バー) ──── */
+/* 左右とも 1px 明線: 隣接ペインの 2px 暗線と組合せて両側に sunken 縁を作る。
+ * (ペイン側から見ると「自ペインの暗2px + ストリップの明1px」で対称) */
+#commandStrip {
+    background-color: #C0C0C0;
+    border-left: 1px solid #FFFFFF;
+    border-right: 1px solid #FFFFFF;
+}
+QPushButton#stripBtn {
+    min-width: 0;
+    max-width: 24px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0;
+    background-color: #C0C0C0;
+    font-size: 9pt;
+}
+QPushButton#stripBtn:disabled {
+    color: #808080;
+}
+
+/* ─── ファンクションキーバー (DOS ファイラー風、ステータスバー直上) ── */
+#fnKeysBar {
+    background-color: #C0C0C0;
+    border-top: 1px solid #FFFFFF;
+}
+QPushButton#fnKeyCell {
+    text-align: left;
+    padding: 0 4px;
+    min-height: 16px;
+    max-height: 16px;
+    min-width: 0;
+    background-color: #C0C0C0;
+}
+QPushButton#fnKeyCell:disabled {
+    color: #808080;
+}
+
 /* ─── ステータスバー ────────────────────────────────────── */
 QStatusBar {
     background-color: #C0C0C0;
@@ -148,6 +186,12 @@ QStatusBar::item {
 #casePane {
     border-left: 2px solid #808080;
     border-right: 2px solid #FFFFFF;
+    background-color: #C0C0C0;
+}
+
+/* Inbox ペイン: 右枠を CasePane の左枠と揃える (同じ 2px 暗線) */
+#inboxPane {
+    border-right: 2px solid #808080;
     background-color: #C0C0C0;
 }
 

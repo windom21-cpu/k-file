@@ -25,8 +25,11 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStyle,
     QTabBar,
@@ -53,13 +56,14 @@ _DEV_DOC_ROOT = Path.home() / "k-file-test-data" / "事件"
 ROOT_VIEW_ID = 999
 
 
-def _human_size(n: int) -> str:
-    """バイト数を人間可読に (例: 2.3MB)。"""
-    if n < 1024:
-        return f"{n}B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.0f}KB"
-    return f"{n / (1024 * 1024):.1f}MB"
+def format_size(n: int, unit: str = "KB") -> str:
+    """バイト数を KB 統一 (既定) または MB 統一でフォーマット。
+
+    InboxPane と同じフォーマット規約。ヘッダー右クリックで KB/MB 切替。
+    """
+    if unit == "MB":
+        return f"{n / (1024 * 1024):.1f}MB"
+    return f"{n // 1024}KB"
 
 
 def _parse_case(path: Path) -> tuple[str, str]:
@@ -74,25 +78,32 @@ class _NameItem(QTableWidgetItem):
     """Name 列セル: フォルダを先頭にまとめ、各々名前順でソートする。
 
     行がフォルダかどうか・実パスを保持し、ダブルクリック時の判定に使う。
+    `..` 行 (is_parent=True) はフォルダの中でも別格で常に最先頭。
     """
 
-    def __init__(self, name: str, is_dir: bool, path: Path) -> None:
+    def __init__(
+        self, name: str, is_dir: bool, path: Path, is_parent: bool = False
+    ) -> None:
         super().__init__(name)
         self.is_dir = is_dir
         self.path = path
+        self.is_parent = is_parent
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         # PySide6 では super().__lt__() が再帰しクラッシュするため Python 側で比較
-        if isinstance(other, _NameItem) and self.is_dir != other.is_dir:
-            return self.is_dir  # フォルダを常に先頭へ
+        if isinstance(other, _NameItem):
+            if self.is_parent != other.is_parent:
+                return self.is_parent   # ".." 行は常に最先頭
+            if self.is_dir != other.is_dir:
+                return self.is_dir       # フォルダを先頭へ
         return self.text().casefold() < other.text().casefold()
 
 
 class _SizeItem(QTableWidgetItem):
-    """サイズ列セル: 表示は人間可読、ソートはバイト数で正しく行う。"""
+    """サイズ列セル: 表示は人間可読 (KB/MB)、ソートはバイト数で正しく行う。"""
 
-    def __init__(self, size: int) -> None:
-        super().__init__(_human_size(size))
+    def __init__(self, size: int, unit: str = "KB") -> None:
+        super().__init__(format_size(size, unit))
         self._size = size
         self.setTextAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -129,6 +140,7 @@ class CasePane(QWidget):
         self._cur_dir: Path | None = None  # 実際に表示中のフォルダ
         # パンくず: (フォルダ名, パス) を上位サブフォルダ→現在フォルダの順で保持
         self._crumb: list[tuple[str, Path]] = []
+        self._size_unit = "KB"  # サイズ列ヘッダー ᴹ/ᴷ でトグル
         self._dir_icon = self.style().standardIcon(
             QStyle.StandardPixmap.SP_DirIcon
         )
@@ -203,6 +215,11 @@ class CasePane(QWidget):
         self.table.setColumnWidth(2, 70)
         self.table.cellDoubleClicked.connect(self._on_table_double_click)
         self.table.itemSelectionChanged.connect(self._on_table_selection)
+        # ヘッダー右クリック (サイズ列のみ) → KB/MB 切替メニュー
+        # 左クリックはソートに専念させる (役割が違うので分離 — ユーザー要望)
+        hdr = self.table.horizontalHeader()
+        hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        hdr.customContextMenuRequested.connect(self._show_header_menu)
         right_col.addWidget(self.table, stretch=1)
         right_container = QWidget()
         right_container.setLayout(right_col)
@@ -332,12 +349,34 @@ class CasePane(QWidget):
             entries = list_files(self._cur_dir)
         else:
             entries = list_folder(self._cur_dir)
-        self._populate(entries)
+        self._populate(entries, self._parent_target())
         self._update_breadcrumb()
 
+    def _parent_target(self) -> Path | None:
+        """`..` 行が指す親パス。実際の親階層がある時だけ返す (なければ None)。
+
+        - ネスト中 (crumb 2 段以上): 一つ手前のパンくず階層へ戻れる → 表示
+        - サブフォルダトップ / 事件フォルダ直下: 事件外には乗り出さない (ADR-2)、
+          かつ「事件フォルダ直下へジャンプ」は物理的な親ではなく `..` の意味に
+          反するため表示しない (左ボタン側で対応)
+        """
+        if len(self._crumb) >= 2:
+            return self._crumb[-2][1]
+        return None
+
+    def _go_up(self) -> None:
+        """`..` 行ダブルクリック: 一階層上 (パンくずを 1 段戻す)。"""
+        if len(self._crumb) >= 2:
+            self._crumb.pop()
+            self._cur_dir = self._crumb[-1][1]
+            self._show_current()
+
     def _on_table_double_click(self, row: int, _col: int) -> None:
-        """ファイル一覧の行をダブルクリック: フォルダなら中へ入る。"""
+        """ファイル一覧の行をダブルクリック: `..` は上へ、フォルダなら中へ入る。"""
         item = self.table.item(row, 0)
+        if isinstance(item, _NameItem) and item.is_parent:
+            self._go_up()
+            return
         if isinstance(item, _NameItem) and item.is_dir:
             self._cur_dir = item.path
             self._crumb.append((item.text(), item.path))
@@ -408,33 +447,164 @@ class CasePane(QWidget):
 
     # ───────── ファイル一覧 ─────────
 
-    def _populate(self, entries: list[FileEntry]) -> None:
-        """一覧を更新。フォルダを先頭・名前昇順に並べる (_NameItem.__lt__ が担保)。"""
+    def _populate(
+        self, entries: list[FileEntry], parent_path: Path | None = None
+    ) -> None:
+        """一覧を更新。フォルダ先頭・名前昇順、`..` は更に最先頭 (_NameItem.__lt__)。"""
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(entries))
-        for r, e in enumerate(entries):
+        has_parent = parent_path is not None
+        self.table.setRowCount(len(entries) + (1 if has_parent else 0))
+
+        row = 0
+        if has_parent:
+            parent_item = _NameItem("..", True, parent_path, is_parent=True)
+            self.table.setItem(row, 0, parent_item)
+            empty_date = QTableWidgetItem("")
+            empty_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 1, empty_date)
+            size_cell = QTableWidgetItem("フォルダ")
+            size_cell.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.table.setItem(row, 2, size_cell)
+            self.table.setRowHeight(row, 14)
+            row += 1
+
+        for e in entries:
             name_item = _NameItem(e.name, e.is_dir, e.path)
             if e.is_dir:
                 name_item.setIcon(self._dir_icon)
-            self.table.setItem(r, 0, name_item)
+            self.table.setItem(row, 0, name_item)
 
             date = datetime.fromtimestamp(e.mtime).strftime("%Y-%m-%d")
             item_date = QTableWidgetItem(date)
             item_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(r, 1, item_date)
+            self.table.setItem(row, 1, item_date)
 
             if e.is_dir:
                 item_size = QTableWidgetItem("フォルダ")
                 item_size.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
-                self.table.setItem(r, 2, item_size)
+                self.table.setItem(row, 2, item_size)
             else:
-                self.table.setItem(r, 2, _SizeItem(e.size))
-            self.table.setRowHeight(r, 14)
+                self.table.setItem(row, 2, _SizeItem(e.size, self._size_unit))
+            self.table.setRowHeight(row, 14)
+            row += 1
+
         self.table.setSortingEnabled(True)
-        # 既定の並び: フォルダ先頭・名前昇順 (列ヘッダクリックで変更可)
+        # 既定の並び: ".." > フォルダ > ファイル (各々名前昇順)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+
+    def _show_header_menu(self, pos) -> None:
+        """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""
+        hdr = self.table.horizontalHeader()
+        col = hdr.logicalIndexAt(pos)
+        if col != 2:
+            return
+        menu = QMenu(self)
+        act_kb = menu.addAction("KB で表示")
+        act_kb.setCheckable(True)
+        act_kb.setChecked(self._size_unit == "KB")
+        act_mb = menu.addAction("MB で表示")
+        act_mb.setCheckable(True)
+        act_mb.setChecked(self._size_unit == "MB")
+        chosen = menu.exec(hdr.mapToGlobal(pos))
+        if chosen is None:
+            return
+        new_unit = "KB" if chosen is act_kb else "MB"
+        if new_unit != self._size_unit:
+            self._size_unit = new_unit
+            self._show_current()
+
+    def inject_to_current_view(self) -> None:
+        """中央コマンドストリップ ▶▶ ボタン用: 現在表示中のサブフォルダ
+        (または「事件フォルダ直下」) に投入要求を発火 (実投入は M3)。"""
+        self._on_subfolder_inject(self._cur_view_id)
+
+    # ───────── 事件フォルダ自体の rename (Shift+F2) ─────────
+
+    def rename_current_case_folder(self) -> None:
+        """事件タブで選択中の事件フォルダ自体の名前を変更。
+
+        ※ 先頭の case_code (例: R060200042) を変えると K-SystemZ から
+        事件を引けなくなる (`doc_root` 直下を `{case_code}*` で前方一致)
+        ため警告を出す (禁止はしない)。
+        """
+        idx = self.case_tabs.currentIndex()
+        if not 0 <= idx < len(self._case_paths):
+            return
+        old_path = self._case_paths[idx]
+        old_name = old_path.name
+        old_code, _ = _parse_case(old_path)
+
+        label = (
+            "新しい事件フォルダ名を入力してください。\n"
+            "※ 先頭の事件番号 (例: R060200042) を変えると\n"
+            "  K-SystemZ から事件が引けなくなる可能性があります。"
+        )
+        new_name, ok = QInputDialog.getText(
+            self,
+            "事件フォルダ名を変更",
+            label,
+            QLineEdit.EchoMode.Normal,
+            old_name,
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == old_name:
+            return
+
+        forbidden = set('\\/:*?"<>|')
+        if any(c in forbidden for c in new_name):
+            QMessageBox.warning(
+                self,
+                "事件フォルダ名を変更",
+                'ファイル名に使えない文字が含まれています:  \\ / : * ? " < > |',
+            )
+            return
+
+        new_path = old_path.parent / new_name
+        if new_path.exists():
+            QMessageBox.warning(
+                self,
+                "事件フォルダ名を変更",
+                f"同名のフォルダが既に存在します:\n{new_name}",
+            )
+            return
+
+        new_code, _ = _parse_case(new_path)
+        if new_code != old_code:
+            ans = QMessageBox.warning(
+                self,
+                "事件番号が変わります",
+                f"事件番号が「{old_code}」→「{new_code}」に変わります。\n"
+                "K-SystemZ から事件を引けなくなる可能性があります。\n\n"
+                "続行しますか?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            old_path.rename(new_path)
+        except OSError as e:
+            QMessageBox.critical(
+                self,
+                "事件フォルダ名を変更",
+                f"名前を変更できませんでした:\n{e}",
+            )
+            return
+
+        # 内部状態 + タブ表示 + 走査結果を更新
+        self._case_paths[idx] = new_path
+        code, name = _parse_case(new_path)
+        self.case_tabs.blockSignals(True)
+        self.case_tabs.setTabText(idx, f"{code} {name}")
+        self.case_tabs.blockSignals(False)
+        self._load_case(idx)
 
     # ───────── 外部 API ─────────
 
