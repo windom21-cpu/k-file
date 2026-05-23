@@ -296,6 +296,16 @@ class MainWindow(QMainWindow):
                 f"デスクトップへ送れませんでした: {result.error}", 6000
             )
             return
+        # << で運んだファイルは「今これから再仕分けする」アクティブ対象。
+        # Inbox の cutoff_days フィルタ (Desktop は 7 日) で古い PDF が隠れて
+        # 別事件に運べない問題を避けるため mtime を現在時刻に更新する。
+        # PDF 内部の作成日メタデータは無傷、FS の mtime のみ更新。Win/Linux 共通。
+        if result.dst is not None:
+            try:
+                import os
+                os.utime(str(result.dst), None)
+            except OSError:
+                pass    # mtime 更新失敗は致命的でない (フィルタで隠れるだけ)
         code, _ = self.case_pane.current_case()
         self._record_history(
             action="move",
