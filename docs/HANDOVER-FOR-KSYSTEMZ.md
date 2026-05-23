@@ -1,6 +1,6 @@
 # k-file 引き継ぎ書 (K-SystemZ 側 開発 AI 向け)
 
-最終更新: 2026-05-23 / k-file v0.1.x (M5 完了、β タグ前)
+最終更新: 2026-05-24 / k-file v0.1.x (M5 完了 + M6a CLI 引数対応、β タグ前)
 
 ---
 
@@ -256,8 +256,8 @@ def open_folder(case_id: int):
 
         if kfile_exe and Path(kfile_exe).is_file():
             try:
-                # CLI 引数は M6 で対応予定 (5.1 参照)。現状は引数を渡しても
-                # 無視されるが、将来対応された時のためフォルダパスは渡しておく
+                # k-file は M6a 以降 CLI 引数対応: 渡した folder を事件タブとして
+                # 即時オープン (フォーカスは last argument)。
                 subprocess.Popen(
                     [kfile_exe, str(folder)],
                     shell=False,
@@ -297,28 +297,43 @@ def open_folder(case_id: int):
 
 ## 5. k-file 側の現状の制約 (実装時に必ず知っておくべきこと)
 
-### 5.1 コマンドライン引数: **現状未対応** ⚠️
+### 5.1 コマンドライン引数: **対応済** (M6a / 2026-05-24)
 
-- `k-file.exe "C:\path\to\folder"` のような引数渡しは **k-file 側でまだ受けていない**
-- 引数を無視して通常起動する (前回のセッションを `kfile.db.open_tabs` から復元)
-- これは k-file の **M6 (配布フェーズ)** での実装予定
+- `k-file.exe "C:\path\to\folder"` で **そのフォルダを事件タブとして即時オープン**
+- 複数引数 OK: `k-file.exe "<folder1>" "<folder2>" ...` で順次タブ追加、最後の引数がアクティブ
+- セッション復元 (前回 `open_tabs`) **の後** に CLI 引数を追加するので、前回タブ +
+  新しく開いたタブが両方並ぶ
+- 既に開いている事件と同じパスが CLI から来た場合 → 重複タブを作らず既存タブにフォーカス
+- ファイル/存在しないパス/空文字列の引数は黙って無視 (落ちない)
+- **非事件フォルダ (任意のディレクトリ) も開ける** — 6 分類サブフォルダがなくても、
+  発見されたサブフォルダがそのままボタン列に出る (汎用ファイラー化、ADR-15)
 
-#### この制約下での K-SystemZ 側挙動
-- K-SystemZ から「事件 A のフォルダを開く」ボタン押下 → k-file.exe 起動 →
-  前回のセッションタブが復元される
-- ユーザーは k-file 上で **`Ctrl+O`** で事件 A を別途選択する必要あり (二度手間)
-- 将来 k-file が CLI 引数対応すれば、自動的に該当事件タブが開くようになる
-- **K-SystemZ 側のコードは今のままで OK** (`subprocess.Popen([kfile_exe, str(folder)])`
-  と書いておけば、k-file 側が対応した瞬間に自動的に機能する)
+#### K-SystemZ から呼ぶときの典型
+```python
+import subprocess
+# 事件 A のフォルダ (案件ドキュメントの実体パス) を渡す
+subprocess.Popen(
+    [kfile_exe_path, str(case_folder)],
+    shell=False,
+)
+```
+- ボタン押下 → k-file 起動 → 事件 A タブが自動で前面に出る (二度手間なし)
+- k-file が既に動いていれば? → 5.2 参照
 
-### 5.2 単一インスタンス保証: **なし**
+### 5.2 単一インスタンス保証: **未対応** (M6b で予定)
 
-- k-file は同時に複数インスタンス起動できる (排他ロックなし)
+- k-file は同時に複数インスタンス起動可能 (排他ロックなし)
 - K-SystemZ から複数事件のボタンを連打すると複数の k-file が立ち上がる
 - 同じファイルを 2 インスタンスから編集すると競合の恐れあり
 
+#### この制約下での K-SystemZ 側挙動 (重要)
+- 1 件目のボタン → k-file 起動 (CLI 引数で事件 A タブが開く) ← OK
+- 2 件目のボタン → **もう 1 つの k-file が起動する** (事件 B タブが開く) ← 2 ウインドウ並ぶ
+- ユーザーは「k-file が既に立ち上がっていることに気づかず、Explorer のごとく
+  毎回起動」しがち
+
 #### 暫定対応 (推奨)
-K-SystemZ 側で「すでに k-file プロセスが起動中なら、新規起動せず警告」のチェックを
+K-SystemZ 側で「すでに k-file プロセスが起動中なら新規起動せず案内」のチェックを
 入れる:
 ```python
 import psutil
@@ -333,12 +348,20 @@ def is_kfile_running() -> bool:
 
 # open_folder ハンドラ内で:
 if mode == "kfile" and is_kfile_running():
-    return {"opened_with": "kfile_already_running",
-            "path": str(folder),
-            "message": "k-file は既に起動中です。Ctrl+O で事件を選択してください。"}
+    return {
+        "opened_with": "kfile_already_running",
+        "path": str(folder),
+        "message": (
+            "k-file は既に起動中です。既存ウインドウで Ctrl+O から "
+            "事件を開いてください。"
+        ),
+    }
 ```
-- フロントエンドはこのメッセージを toast 等で表示
-- k-file 側の単一インスタンス + IPC は M6 で検討
+- フロントエンドは toast / モーダル等でユーザーに通知
+- 「強制的にもう 1 つ起動するか?」の選択肢を出してもよい (上級者向け)
+- k-file 側の単一インスタンス + IPC (= 既存 k-file に「タブ追加して」と指示) は
+  **M6b で実装予定**。実装されたら CLI 引数を渡すだけで自動的に既存ウインドウに
+  ぶら下がるようになる → K-SystemZ 側のチェックロジックは不要に
 
 ### 5.3 k-file の設定は k-file 側で完結
 - k-file 自身の設定 (Inbox 監視先、ksystemz.db パス、kfile.db の場所、open_tabs)
@@ -449,8 +472,7 @@ GitHub Actions (CI ビルド)
 | 観点 | 具体的に見る | 改善先 |
 |---|---|---|
 | 起動速度 | Explorer と比較して耐えられるか | k-file 側 (起動最適化) |
-| 二度手間 | Ctrl+O で事件選択する手間 | k-file M6 (CLI 引数対応) |
-| 多重起動 | 複数 k-file が立つ混乱 | k-file M6 (単一インスタンス) |
+| 多重起動 | 複数 k-file が立つ混乱 | k-file M6b (単一インスタンス + IPC) |
 | 落ちる/反応しない | バグ報告 (何をした時、何が起きた) | k-file 側 (バグ修正) |
 | AB 集約運用 | 「他事件へ」+ ショートカットダブルクリックでタブ切替 | 業務フローに乗るかの検証 |
 | Inbox の使い勝手 | 6 分類が業務カテゴリと合うか | UX 改善議論 |

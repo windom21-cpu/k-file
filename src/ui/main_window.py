@@ -47,7 +47,7 @@ _CASE_LEFT_OFFSET = 144
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, initial_paths: list[Path] | None = None) -> None:
         super().__init__()
         self.setWindowTitle("k-file")
         self.resize(1400, 860)
@@ -58,9 +58,13 @@ class MainWindow(QMainWindow):
         self._inbox_count = 0
         self._preview_visible = False  # 初期は 1:1 二カラム (F3 で展開)
         self._repo_cache: CaseRepo | None = None
+        # CLI 引数で渡されたフォルダ (K-SystemZ 連携 / 「k-file で開く」の窓口)。
+        # セッション復元の後で追加し、最後の引数をアクティブタブにする (M6a / ADR-17)。
+        self._initial_paths: list[Path] = list(initial_paths or [])
         self._build_layout()
-        # _build_layout 完了後にセッション復元 (case_pane が準備済の状態で)
+        # _build_layout 完了後にセッション復元 + CLI 引数を順次オープン
         self._restore_session()
+        self._open_initial_paths()
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -403,6 +407,29 @@ class MainWindow(QMainWindow):
         self.case_pane.add_case_tab(target)
         code, _ = _parse_case(target)
         self.statusBar().showMessage(f"事件ショートカットを開きました: {code}", 3000)
+
+    def _open_initial_paths(self) -> None:
+        """CLI 引数で渡されたフォルダを順次タブに追加 (K-SystemZ 連携用)。
+
+        セッション復元の後に呼ばれる。add_case_tab は重複時に既存タブへ切替
+        するので、前回開いていた事件と同じ path が CLI から来てもダブらない。
+        最後の path がアクティブタブになる (subprocess.Popen で呼んだ K-SystemZ
+        側の意図する事件が前面に出る)。
+        """
+        if not self._initial_paths:
+            return
+        opened = 0
+        for p in self._initial_paths:
+            try:
+                if p.is_dir():
+                    self.case_pane.add_case_tab(p)
+                    opened += 1
+            except OSError:
+                continue
+        if opened:
+            self.statusBar().showMessage(
+                f"コマンドライン引数から {opened} 件のフォルダを開きました", 4000
+            )
 
     def _restore_session(self) -> None:
         """前回 open_tabs に保存されていた事件を順次タブに復元。

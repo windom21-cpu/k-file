@@ -2,6 +2,13 @@
 
 PySide6 を起動し、Win95 QSS を適用してメインウインドウを表示する。
 PyInstaller --onefile で配布されたときは sys._MEIPASS から resources を読む。
+
+コマンドライン引数 (M6a):
+    k-file.exe "C:\\path\\to\\folder" ["別フォルダ"...]
+        → 渡されたフォルダを順に事件タブとして開く。
+        セッション復元 (前回 open_tabs) の後に追加され、最後の引数が active に。
+        K-SystemZ の「フォルダを開く」連携 (subprocess.Popen) の窓口。
+        非事件フォルダも受け付ける (汎用ファイラー化、ADR-15 と整合)。
 """
 from __future__ import annotations
 
@@ -38,6 +45,25 @@ def _app_icon() -> QIcon:
     return icon
 
 
+def parse_initial_paths(argv: list[str]) -> list[Path]:
+    """sys.argv から事件タブとして開くフォルダパスを抽出 (M6a)。
+
+    argv[0] (実行ファイル) はスキップ、以降のうちディレクトリとして実在するものだけ。
+    ファイルや実在しないパスは無視 (黙って捨てる)。
+    """
+    out: list[Path] = []
+    for arg in argv[1:]:
+        if not arg:
+            continue
+        try:
+            p = Path(arg)
+        except (TypeError, ValueError):
+            continue
+        if p.is_dir():
+            out.append(p)
+    return out
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("k-file")
@@ -46,7 +72,8 @@ def main() -> int:
     app.setStyleSheet(_load_stylesheet())
     app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
-    window = MainWindow()
+    initial_paths = parse_initial_paths(sys.argv)
+    window = MainWindow(initial_paths=initial_paths)
     window.show()
     return app.exec()
 
