@@ -6,11 +6,12 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M2 補強 (UI 詰め 2) 完了 (2026-05-23)。次は M3 投入 + cross-case 移動**
+- 現在地: **M3 投入 + cross-case Move ✅ / M4 Del + Undo + 履歴 ✅ 完了 (2026-05-23)。次は M5 K-SystemZ 連携 + 設定ダイアログ**
 - スタック: Python + PySide6、PyInstaller で .exe 配布
 - UI 方針: Windows95/98 風 (MS UI Gothic / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (単一リポへ直 upload)
+- テスト: 41 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py`) 全緑
 
 ---
 
@@ -219,25 +220,29 @@
 - **M1 スケルトン (✅ 2026-05-22 完了)**: PySide6 起動 + Win95 QSS + 自作タイトルバー (14px) + 事件タブ (アクティブ強調、中央ペイン内) + 3 ペイン 1:2:2 (Inbox / 事件フォルダ / プレビュー) + 中央ペイン左右の sunken 縦枠で視覚分離 + サブフォルダボタン + 件数バッジ + 行高 14px + ステータスバー (全てダミーデータ)
 - **M2 実ファイル接続 + プレビュー (✅ 2026-05-22 完了)**: 事件フォルダ実読込 (`core/folder_scanner.py`)、Inbox 実読込 + QFileSystemWatcher 自動更新 (`core/inbox_watcher.py`)、PDF/画像プレビュー + 複数ページのページ送り (QPdfView / QPixmap)、PDF + 画像フィルタ、kfile.db + 無視機能 (`infra/kfile_db.py`)、ネストフォルダのフォルダ行表示。残: 更新日時フィルタ (設定ダイアログ要・M3 以降)
 - **M2 補強 — UI 詰め 2 (✅ 2026-05-23 完了)**: `..` 行 / 下部ファンクションキーバー / Shift+F2 事件フォルダ rename / F3 プレビュー開閉トグル / 動的レイアウト (Inbox 幅 ≒ ファイル一覧幅) / 中央コマンドストリップ / Inbox 列を参照フォルダに統一 + ソート / サイズ KB 統一 + 右クリックで KB/MB / Inbox 右枠と CasePane 左枠を sunken 対称化。詳細 §7
-- **M3 投入 + cross-case 移動**: Alt+0〜9 投入 (Copy → 検証 → 元削除)、**F2 = rename ダイアログ (Windows 標準)** + 最近使った名前、衝突自動連番、cross-case D&D Move、ステータスバー反映
-- **M4 Undo + 削除 + 履歴**: Ctrl+Z Undo (最低 10 段)、Del で OS ごみ箱 + 履歴記録、F12 投入履歴ビュー (サムネ付)、各行から個別 Undo
-- **M5 K-SystemZ 連携**: 「事件を開く」ダイアログ (Ctrl+O) で ksystemz.db RO 検索、複数事件タブ同時開き、セッション復元、フォルダ D&D で事件タブ追加 → β タグ開始
+- **M3 投入 + cross-case 移動 (✅ 2026-05-23 完了)**: `core/file_ops.py` (Copy→検証→元削除 / Move / 衝突自動連番 / send2trash)、Alt+0〜9 / 右クリック / D&D で即時投入 (rename ダイアログを挟まない — ADR-7)、**F2 = 単独 rename ダイアログ** + recent_names 候補、cross-case D&D Move (同名サブフォルダ自動マッピング)、`drop_history` 記録、ステータスバー反映、Inbox 更新日時フィルタ (cutoff_days)。詳細 §7
+- **M4 Undo + 削除 + 履歴 (✅ 2026-05-23 完了)**: Del / F8 / − ボタン → OS ごみ箱 (`file_ops.trash`) + 履歴記録、Ctrl+Z Undo (inject/move/rename — trash は除外 ADR-13)、↶ ボタン enable 状態管理、F12 投入履歴ビュー (テキスト版、各行から個別 Undo)、「ごみ箱を開く」(編集メニュー) で Windows ネイティブ Recycle Bin を起動。サムネは後回し
+- **M5 K-SystemZ 連携 + 設定ダイアログ**: 「事件を開く」ダイアログ (Ctrl+O) で ksystemz.db RO 検索 (cases + case_persons + persons join)、複数事件タブ同時開き、セッション復元 (open_tabs)、フォルダ D&D で事件タブ追加、設定ダイアログ (Inbox 監視先 / ksystemz.db パス) → β タグ開始。**ksystemz.db 本体は持ち出さず、引き継ぎ書スキーマからモック生成で Linux 実装可能** (詳細 §8)
 - **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (事件フォルダ以外も可)、PyInstaller .exe + GitHub Actions ビルド、Win 機で業務並走 → v1.0 stable
   - ※フォルダ既定ハンドラの OS 乗っ取りは行わない (§15 ADR-2)。literal な「Explorer ダブルクリック→k-file」は、やるとしても Win 実機実験 → 上級者向け自己責任トグル止まり
 
 ### 確定したショートカット体系 / サブフォルダ操作 (原仕様の F1〜F6 から変更済)
 - **サブフォルダボタン 左クリック**: そのサブフォルダの中身を表示 (閲覧のみ・ファイルは動かさない)
-- **Alt+0〜9**: 選択中の Inbox ファイルを投入 (0=事件フォルダ直下 / 1〜9=サブフォルダ先頭 9 個)。Inbox 未選択時は閲覧のみ
+- **Alt+0〜9**: 選択中の Inbox ファイルを投入 (0=事件フォルダ直下 / 1〜9=サブフォルダ先頭 9 個)。Inbox 未選択時は閲覧のみ。即時投入 (ダイアログなし)
 - **サブフォルダボタン 右クリック**: 投入メニュー (D&D 以外のマウス投入手段)
-- **F2**: ファイル/フォルダ名変更 (Windows 標準) — M3 実装予定
+- **中央ストリップ `>1`〜`>0`**: Alt+N 相当の動的ボタン群 (現在事件のサブフォルダ構成に追従)
+- **中央ストリップ `<<`**: 中央選択ファイル → OS デスクトップへ戻す (一時保留)
+- **F2**: ファイル/フォルダ名変更 (Windows 標準) — 中央 / Inbox 両方で動く
 - **Shift+F2**: 事件フォルダ自体の rename ダイアログ (滅多に使わない用途、case_code 変更時は警告)
 - **F3**: プレビュー開閉トグル (1:1 二カラム ↔ 1:2:2 三カラム、初期は二カラム)
 - **F5**: Inbox 更新 (Windows 標準)
-- **F12**: 投入履歴ビュー — M4 実装予定
+- **Del / F8**: 選択ファイル/フォルダを OS ごみ箱へ送る (中央 / Inbox 両方)
+- **F12 / 編集→投入履歴**: 投入履歴ビュー (各行から個別 Undo)
+- **編集→ごみ箱を開く**: OS のごみ箱ウインドウを起動 (削除の復元動線)
 - **Ctrl+O**: 事件を開くダイアログ — M5 実装予定
-- **Ctrl+Z**: Undo — M4 実装予定
+- **Ctrl+Z / 編集→元に戻す**: Undo (inject/move/rename。trash は OS ごみ箱右クリックに委譲 — ADR-13)
 - **Ctrl+Q**: 終了
-- 下部ファンクションキーバー (DOS ファイラー風) に F1〜F12 を全 12 枠表示、未実装は薄色グレー
+- 下部ファンクションキーバー (DOS ファイラー風) に F1〜F12 を全 12 枠表示、未実装は薄色グレー (F2/F3/F5/F8/F12 が enable)
 
 ---
 
@@ -296,35 +301,112 @@
 - ✅ `src/ui/preview_pane.py` — QPdfView (PDF) / QPixmap (画像) プレビュー。複数ページはページ送りバー。読込失敗は graceful
 - ✅ ファイル選択 → プレビュー連動 (Inbox / 中央 両方から)
 
+### M3 投入 + cross-case Move (2026-05-23 完了)
+
+#### コア (Qt 非依存)
+- ✅ `core/file_ops.py` — `inject` (Copy→検証→元削除) / `move` (cross-case) / `rename` / `trash` (send2trash) / `validate_name` (Win 禁則文字) / `resolve_collision` (自動連番 `name (2).ext`)。各操作は `OpResult` (ok/action/src/dst/renamed_to/collided/error) を返す
+- ✅ `core/inbox_watcher.py` 拡張 — `InboxSource` dataclass に `cutoff_days` 追加 (Desktop は実 7 日フィルタ)。`list_inbox_files` 切り出し (Qt 非依存)
+- ✅ `tests/test_file_ops.py` 22 件、`tests/test_inbox_watcher.py` 6 件 — 純関数を網羅
+
+#### infra
+- ✅ `infra/kfile_db.py` 拡張 — `record_history` / `add_recent_name` / `recent_names` / `recent_history` API
+- ✅ `infra/folder_shortcut.py` — Linux/Mac はシンボリックリンク、Win は PowerShell COM 経由の `.lnk`。事件→他事件 root への集約マーカ用 (`create_folder_shortcut`)
+- ✅ `requirements.txt` に `Send2Trash==1.8.3` 追加
+
+#### UI
+- ✅ Alt+0〜9 / 右クリック / D&D 投入を `file_ops.inject` に実接続。**rename ダイアログなしの即時投入** (ADR-7)。衝突は自動連番、ステータスバー通知
+- ✅ `ui/rename_dialog.py` — Win95 風 frameless ダイアログ、`mode='inject'/'rename'` でラベル + Esc 動作切替。recent_names 候補 combobox、stem 部分のみ選択 (Windows 流儀)。raised 外縁 (QSS)
+- ✅ `F2` — 中央 / Inbox のどちらでも単独 rename ダイアログ
+- ✅ `Shift+F2` — 事件フォルダ自体の rename (case_code 変更警告つき)
+- ✅ `ui/dnd.py` — `text/uri-list` + `application/x-kfile-source` で起点 (inbox / case) を識別
+- ✅ Inbox table → サブフォルダボタン D&D 投入 (rename なし、即時)
+- ✅ 中央 file table → 別事件タブ D&D Move (同名サブフォルダ自動マッピング、なければ事件 root)
+- ✅ `ui/command_strip.py` 改修 — `▶▶` を廃止、**現在事件のサブフォルダに対応した動的 `>1`〜`>0` ボタン群** + `<<` (実 Desktop 戻し) + `✕` (無視) + `↶` (Undo、M4 まで disabled)。区切り線で 3 ブロック
+- ✅ ストリップ数字ボタンは Inbox 未選択時 = 閲覧のみ、選択中 = 投入 + そのサブフォルダを開く
+- ✅ ストリップ `<<` — 中央選択ファイルを実 OS デスクトップに移動 (ADR-9: round-trip 用)
+- ✅ Inbox 監視対象に **実 ~/デスクトップ** を Desktop ラベルで合流 (同名ラベルは同じフィルタタブにマージ、`cutoff_days=7` で古い PDF 自動非表示)
+- ✅ CasePane: サブフォルダ列下に **`+ 追加`/`− 削除`** ボタン (新規サブフォルダ作成 / 表示中サブフォルダを OS ごみ箱へ)
+- ✅ CasePane: パス行右に **「他事件へ」ボタン** — 開いている他事件タブをメニュー表示 → 選択した事件 root に現事件フォルダのショートカットを置く (ADR-11: AB 集約運用)
+- ✅ About ダイアログ: raised 外縁 QSS + 内側 QWidget ラッパ撤去 (border 表示のため)
+
+### M4 Undo + 削除 + 履歴 (2026-05-23 完了)
+
+#### コア
+- ✅ `core/undo_ops.py` — `undo_action(row)` で drop_history 1 行を逆実行。inject/move は dst → src を `shutil.move`、rename は dst → src を `rename`、trash はファイル名込みの動線案内メッセージで失敗扱い (Win Recycle Bin に委譲)
+- ✅ `tests/test_undo_ops.py` 7 件 — inject/move/rename の成功・dst 欠落・src 衝突・trash 動線案内・未対応 action を網羅
+
+#### infra
+- ✅ `infra/kfile_db.py` 拡張 — `last_undoable_entry` / `undoable_count` / `mark_undone` API。**`action != 'trash'` を SQL で除外** (ADR-13)
+- ✅ `infra/recycle_bin.py` — `open_recycle_bin()` で OS ネイティブのごみ箱を起動 (Win: `explorer.exe shell:RecycleBinFolder`)
+
+#### UI
+- ✅ `Del` / `F8` — 中央 / Inbox のどちらでも選択行を OS ごみ箱へ (`file_ops.trash` + drop_history 記録)。−ボタン (サブフォルダ削除) も同経路に統一
+- ✅ `Ctrl+Z` / 編集→元に戻す / `↶` ボタン — 最新の Undoable 履歴 (trash 除く) を逆実行。失敗時はエラーメッセージ、成功時は両ペイン refresh
+- ✅ `↶` ボタンと「元に戻す」メニュー、ステータスバー `Undo N 段` の自動連動 (`_record_history` wrapper で必ず refresh)
+- ✅ `ui/history_view.py` — F12 投入履歴ビュー (frameless モーダル、最近 200 件、各行に `戻す` ボタン)。trash 行を「戻す」と動線案内メッセージが出る
+- ✅ 編集→ごみ箱を開く — Windows ネイティブの Recycle Bin ウインドウを開く動線
+
 ---
 
 ## 8. 次にやること
 
-### M2 完了 (2026-05-22) → M3 へ
+### M4 完了 (2026-05-23) → M5 へ
 
-M2 で実ファイル接続・プレビューまで完了。アプリは実フォルダ/実ファイルを
-読み・表示・プレビューできる (まだ読み取り専用、ファイルは動かさない)。
+M3 + M4 で投入・移動・名前変更・削除・Undo・履歴ビューが揃った。
+ファイル操作系は機能的にほぼ完備。次は K-SystemZ 連携で「実事件」を
+扱えるようにし、設定ダイアログでパス類をユーザー編集可能にする。
 
-### M2 dev の足場 (M5 で正式化する仮実装)
+### dev の足場 (M5 で正式化される仮実装)
 - 事件フォルダ: `~/k-file-test-data/事件/` を `case_pane.py` の `_DEV_DOC_ROOT`
   で直読み → M5 で ksystemz.db +「事件を開く」ダイアログに置換
-- Inbox 監視対象: `~/k-file-test-data/inbox-{scan,desktop,work}` を
-  `inbox_pane.py` の `_DEV_INBOX_SOURCES` で直指定 → 設定ダイアログ +
-  kfile.db settings に置換
+- Inbox 監視対象: `~/k-file-test-data/inbox-{scan,desktop,work}` + 実 `~/デスクトップ`
+  を `inbox_pane.py` の `_DEV_INBOX_SOURCES` で直指定 → 設定ダイアログ +
+  kfile.db settings に置換 (本番は scan/Desktop/作業 をユーザーがパス選択)
 - テストデータは `~/k-file-test-data/` に合成 (ネスト 3 階層・欠番サブ
-  フォルダ・実 PDF/画像入り)。リポジトリには含めない
+  フォルダ・実 PDF/画像入り)。リポジトリには含めない (`.gitignore`)
 
-### M3 で実装する範囲
-- `core/file_ops.py` — Inbox→サブフォルダ投入 (Copy→検証→元削除)、
-  cross-case Move、衝突自動連番、send2trash 削除
-- Alt+0〜9 / 右クリック / D&D の投入を実処理に接続 (現状はダミーメッセージ)
-- F2 = rename ダイアログ + recent_names (kfile.db) 候補表示
-- drop_history (kfile.db) への記録
-- 更新日時フィルタ + 設定ダイアログ (ツール→設定) もこの辺りで
+### M5 で実装する範囲
+
+**ksystemz.db は持ち出さず、引き継ぎ書スキーマからモックを生成して Linux で実装する**
+(ADR-14)。本物の K-SystemZ コードや実 DB は Win 機にしかなく、業務データを
+含むため持ち出し不可。引き継ぎ書 (`~/ダウンロード/AI引き継ぎ_詳細版_v22.md` /
+`AI引き継ぎ_セッション_20260521.md`) にスキーマと API ロジックが完全に記載
+されているので、それを元にモック DB と実装を Linux で完成、Win 機で実 DB
+に対して検証、というワークフローで進める。
+
+#### Phase A (Linux 本機): モック生成
+- `tests/fixtures/build_mock_ksystemz_db.py` — 引き継ぎ書のスキーマで
+  `~/k-file-test-data/ksystemz.db` を生成:
+  - `office_info` (id=1): `doc_root_path = ~/k-file-test-data/事件`
+  - `cases` 10 件: `case_code = R060200042..R060200051` (既存テストデータと整合)
+  - `case_persons` + `persons`: 各事件に依頼者 1 人 (架空の名前)
+
+#### Phase B (Linux 本機): 実装
+- `core/case_repo.py` — sqlite3 `mode=ro` 接続 + 事件検索 (cases ← case_persons
+  ← persons の join、case_code/case_name/依頼者名で AND/OR フィルタ) +
+  `case_code` 前方一致での実フォルダ解決
+- `ui/open_case_dialog.py` — Ctrl+O で開くモーダル (Win95 風 frameless)。
+  検索ボックス + 一覧 + 「開く」ボタン。選択した事件を case_pane のタブに追加
+- `ui/settings_dialog.py` — Inbox 監視先 (パス + cutoff_days を可変リストで)、
+  ksystemz.db パス、kfile.db の場所表示 (情報のみ)。`kfile.db.settings` に保存
+- `case_pane.py` 改修 — `_DEV_DOC_ROOT` 廃止、`case_repo` 経由で事件パス取得
+- セッション復元 — 起動時に `open_tabs` テーブルから前回タブを再オープン
+- フォルダ D&D で事件タブ追加 — メインウインドウへの drop を受けて case_pane へ
+- 単体テスト — `case_repo` の検索/解決をモック db で網羅
+
+#### Phase C (Win 機): 実 DB 検証
+- GitHub から最新 .exe DL
+- 設定ダイアログで実 `ksystemz.db` パスを指定 (`X:\K-system\ksystemz\ksystemz.db`)
+- 業務事件 5〜10 件で検証
+- パス区切り (`\` vs `/`)、日本語フォルダ名、`folder_path` カラムの実値、
+  case_code の前方一致時の衝突などのエッジケース発見 → 修正 push → 本機 pull
+- 一通り動けば **β タグ** (v0.x.0-beta.1)
 
 ### 着手前メモ
 - Win .exe ビルドで QtPdf モジュール/プラグインの同梱を確認 (`k-file.spec` / CI)
-- `core/` のユニットテスト未整備 (folder_scanner 等は Qt 非依存でテスト可能)
+- `core/` のテストは file_ops / undo_ops / inbox_watcher は緑、`folder_scanner` 未整備
+- `case_pane.py` から `_DEV_DOC_ROOT` を外す際、現在の動的サブフォルダ走査 +
+  ネスト降下ロジックはそのまま流用可
 
 ---
 
@@ -486,7 +568,56 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
 ### ADR-6: Inbox と参照フォルダの間に「中央コマンドストリップ」(2026-05-23)
 - **経緯**: マウス派ユーザーのために、頻用操作 (投入 / 無視 / Undo) のボタンを置く場所が欲しかった。
 - **決定**: Inbox と参照フォルダの間に縦バー (幅 28px、`src/ui/command_strip.py`) を置き、`▶▶` 投入 / `✕` 無視 / `↶` Undo を縦中央に配置。Norton Commander / Total Commander の中央コマンド列に倣う設計。
-- **将来拡張**: 削除・Inbox 更新・選択ファイル情報など、頻度高い操作はここに追加していく。strip 自体は QSS で「自前枠」を持ち、隣接ペインの sunken 縁と組み合わせて視覚的に区切る (ADR-5 と連動)。
+- **後続**: M3 で `▶▶` 1 個 → サブフォルダ対応の動的 `>1`〜`>0` 群に拡張 (ADR-8)。
+
+### ADR-7: 投入は即実行 / rename ダイアログは F2 のみ (2026-05-23)
+- **経緯**: M3 初版では Alt+0〜9 / D&D / `>>` ボタンすべてで rename ダイアログ (`Esc=元名のまま投入` / `Enter=入力名`) を出していたが、マウス派/キー派ともに「ダイアログが邪魔、移動は素早く実行したい」という反応。
+- **決定**: **投入・移動系はすべて即時実行** (Alt+0〜9 / 右クリックメニュー / D&D / ストリップ数字ボタン)。衝突時は自動連番 + ステータスバー通知のみ。rename したい時は **F2 で別途リネーム** (Windows 標準動線)。
+- **理由**: 投入とリネームは別概念。投入の中で rename を要求すると思考が止まる。Windows Explorer 流儀 (Ctrl+X → Ctrl+V は即実行、F2 で rename) と整合。
+
+### ADR-8: 中央ストリップ = 動的 `>1`〜`>0` ボタン群 (2026-05-23)
+- **経緯**: `▶▶` 1 個では「どのサブフォルダに投入したか視覚化されない」。マウス派は事件ごとに変わるサブフォルダ群に対応した投入ボタンが欲しい。
+- **決定**: ストリップに **現在事件のサブフォルダ alt_key に対応した `>1`〜`>9` + `>0` (事件フォルダ直下)** を動的に配置。1 クリック = 投入 + そのフォルダを開く (Inbox 未選択時は閲覧のみ)。`>` の向きで「Inbox から右へ移動」を視覚化。
+- **連動**: 事件タブ切替・サブフォルダ +/− でストリップが自動再構築 (`CasePane.subfoldersChanged` → `MainWindow._sync_strip_targets`)。
+
+### ADR-9: `<<` = 実 OS デスクトップへ戻す (2026-05-23)
+- **経緯**: 中央から Inbox 方向の逆動線が欲しい (誤投入の戻し / 一旦保留して別事件に運ぶ)。
+- **検討**: (a) k-file 管理の「保留」フォルダ案、(b) 既存 Inbox 監視先のどれかへ戻す案、(c) 実 Desktop へ戻す案、(d) cross-case Move のみで対応する案。
+- **決定**: **(c) 実 OS デスクトップへ送る**。理由: 実 Desktop は OS 管理で消えない (k-file 管理の独自フォルダは k-file が消えると不安)。実 Desktop を Inbox 監視対象に追加すれば round-trip も成立。
+- **実装**: ストリップ `<<` ボタンで `file_ops.move(src, ~/デスクトップ)` 実行 + history 記録。Inbox 監視に実 Desktop を追加 (同名 "Desktop" ラベルで合流、`cutoff_days=7` で古いファイル抑制)。
+
+### ADR-10: フォルダ動線ボタンはパス行右に集約 (2026-05-23)
+- **決定**: 事件フォルダ単位の操作 (シェル系) は **パス行の右** に。サブフォルダ単位の操作 (構成系) は **サブフォルダ列の下** に。
+- **配置**:
+  - パス行右: 「他事件へ」(ショートカット作成、AB 集約用)
+  - サブフォルダ列下: `+ 追加` / `− 削除`
+- **理由**: 操作対象 (事件全体 vs サブフォルダ単位) と空間的対応を一致させる。`+ -` は左列のサブフォルダ群の延長、シェル系は事件のパス表示の延長。
+
+### ADR-11: 他事件への集約は直接ショートカット配置 (2026-05-23)
+- **経緯**: 夫婦事件 (AB) のような関連事件で、文書を A に集約し B には A への入口だけ残す運用がある。当初は「事件 → デスクトップ shortcut → Inbox → 他事件 root へ D&D」を想定したが、Inbox はフォルダリンクを拾わないため不成立。
+- **決定**: パス行に **「他事件へ」ボタン** を追加。クリックで他事件タブのメニュー → 選択で **現事件 root のショートカット (Win: .lnk / Linux: symlink) を直接 target 事件 root に作成**。デスクトップ経由不要。
+- **理由**: 集約マーカは「事件間の関係」を表すもので、デスクトップ経由は中間ステップが多すぎる。k-file 内で完結する直接動線が業務ループに乗る。
+
+### ADR-12: Inbox ソースごとに `cutoff_days` フィルタ (2026-05-23)
+- **経緯**: Desktop を Inbox 監視に入れると過去の蓄積 (PDF 数十件) が Inbox に並んで邪魔。
+- **決定**: `InboxSource` dataclass に `cutoff_days: int | None` を追加。指定がある時は「現在時刻から N 日より古い更新日時」のファイルを除外。scan/作業 は `None` (全件)、Desktop は `7` 日。
+- **将来**: M5 設定ダイアログでユーザーがソースごとに編集可能にする。
+
+### ADR-13: trash の Undo は OS Recycle Bin に委譲 (2026-05-23)
+- **経緯**: Del → OS ごみ箱 (`send2trash`) は OS 標準の安全動線だが、自動復元が OS 依存で fragile。Win では `Shell.Application` COM が locale 依存 (動詞名 `Restore` vs `元に戻す`) で誤動作リスクあり。
+- **決定**:
+  1. `Ctrl+Z` は **trash エントリをスキップ** (`db.last_undoable_entry` の SQL で `action != 'trash'`)
+  2. 直近 trash の前にあった inject/move/rename が Undo 対象になる
+  3. trash 復元は **Windows ネイティブの Recycle Bin 右クリック「元に戻す」** に委譲
+  4. k-file は動線を提供: Del のステータスメッセージで案内 + 編集メニュー「ごみ箱を開く」(`explorer.exe shell:RecycleBinFolder`) で 1 クリックで起動
+  5. F12 履歴ビューの trash 行「戻す」ボタンは具体的な動線メッセージ (ファイル名 + 編集メニュー案内)
+- **理由**: PowerShell COM 経由の自動復元は locale 依存で誤上書きリスクあり。Win ユーザーは Recycle Bin の右クリック「元に戻す」に慣れているため、それに委譲する方が安全かつ直感的。
+
+### ADR-14: K-SystemZ 連携はモック DB ベースで Linux 実装 (2026-05-23)
+- **経緯**: K-SystemZ 本体 (FastAPI/React/SQLite) と実 ksystemz.db は Win 機にあり、業務データを含むため Linux 本機に持ち出せない。だが K-SystemZ 引き継ぎ書 (`~/ダウンロード/AI引き継ぎ_*.md`) には完全なスキーマと API ロジックが記載されており、Linux 上で参照可能。
+- **決定**: M5 K-SystemZ 連携は **引き継ぎ書スキーマからモック ksystemz.db を生成して Linux で実装** → CI で .exe ビルド → Win 機で実 DB に対して検証 → エッジケース修正、というワークフローで進める (HANDOVER §8 Phase A/B/C 参照)。
+- **守るべき**: モック DB は完全にフィクション (架空の依頼者名 / case_code R060200042..)、リポジトリには `ksystemz.db` を一切含めない。本物の DB は Win 機側のみで運用。
+- **Phase C (Win 機検証) で発見されたエッジケース** は Win 機側で修正 push → 本機 pull、または本機で再現可能なら本機で修正。
 
 ---
 

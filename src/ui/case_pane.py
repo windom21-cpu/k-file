@@ -20,9 +20,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -39,12 +40,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.core import file_ops
+from src.infra.folder_shortcut import create_folder_shortcut
+
 from src.core.folder_scanner import (
     CaseScan,
     FileEntry,
     list_files,
     list_folder,
     scan_case_folder,
+)
+from src.ui.dnd import (
+    SRC_CASE,
+    SRC_INBOX,
+    kfile_local_paths,
+    kfile_source_of,
+    make_kfile_mime_data,
 )
 from src.ui.pane_header import PaneHeader
 
@@ -116,12 +127,112 @@ class _SizeItem(QTableWidgetItem):
         return self.text() < other.text()
 
 
+class _DropButton(QPushButton):
+    """Drop を受け入れるサブフォルダボタン。
+
+    Inbox 起点の D&D を受け取った時のみアクセプトし、parent CasePane の
+    `_on_inbox_drop(view_id, src_path)` を呼び出す。
+    """
+
+    def __init__(self, view_id: int, label: str, pane: "CasePane") -> None:
+        super().__init__(label, pane)
+        self._view_id = view_id
+        self._pane = pane
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_INBOX:
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_INBOX:
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e) -> None:
+        paths = kfile_local_paths(e.mimeData())
+        if paths and kfile_source_of(e.mimeData()) == SRC_INBOX:
+            self._pane._on_inbox_drop(self._view_id, paths[0])
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+
+class _DropTabBar(QTabBar):
+    """事件タブバー: 事件起点の D&D を受け取り、クロス事件 Move のトリガとする。"""
+
+    def __init__(self, pane: "CasePane") -> None:
+        super().__init__(pane)
+        self._pane = pane
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_CASE:
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_CASE:
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) != SRC_CASE:
+            e.ignore()
+            return
+        target_idx = self.tabAt(e.position().toPoint())
+        if target_idx < 0:
+            e.ignore()
+            return
+        paths = kfile_local_paths(e.mimeData())
+        if not paths:
+            e.ignore()
+            return
+        self._pane._on_case_tab_drop(target_idx, paths[0])
+        e.acceptProposedAction()
+
+
+class _DragCaseTable(QTableWidget):
+    """事件ファイル一覧: drag 起点。クロス事件 Move のためにパスを MIME に載せる。"""
+
+    def __init__(self, pane: "CasePane") -> None:
+        super().__init__(0, 3, pane)
+        self._pane = pane
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
+
+    def startDrag(self, _actions) -> None:
+        entry = self._pane.selected_entry()
+        if entry is None:
+            return
+        path, _is_dir = entry
+        drag = QDrag(self)
+        drag.setMimeData(make_kfile_mime_data(SRC_CASE, path))
+        drag.exec(Qt.DropAction.MoveAction | Qt.DropAction.CopyAction,
+                  Qt.DropAction.MoveAction)
+
+
 class CasePane(QWidget):
     # 左クリック = 閲覧 (ファイルは動かさない)
     subfolderBrowsed = Signal(int, str)          # (view_id, view_name)
     # Alt+0〜9 / 右クリックメニュー = 投入要求 (実投入は M3)
     subfolderInjectRequested = Signal(int, str)  # (view_id, view_name)
+    # Inbox からの D&D 投入要求 (Alt とは別シグナル — rename ダイアログは出さず即投入)
+    inboxDropInjectRequested = Signal(int, str, str)  # (view_id, view_name, src_path)
+    # 事件タブへの D&D = クロス事件 Move 要求
+    caseTabDropMoveRequested = Signal(int, str)       # (target_tab_idx, src_path)
     caseTabChanged = Signal(int, str, str)       # (idx, code, name)
+    # サブフォルダ構成 (≒ Alt 割当) が変わった → 中央ストリップが再構築
+    subfoldersChanged = Signal()
+    # 削除要求 (Del キー / − ボタン)。MainWindow が file_ops.trash + 履歴記録を担当
+    deleteRequested = Signal(str)                # 削除対象パス
+    # ステータスバー通知 (サブフォルダ追加/ショートカット作成等)
+    actionStatus = Signal(str)
     fileSelected = Signal(str)                   # 選択ファイルのパス (プレビュー用)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -153,8 +264,8 @@ class CasePane(QWidget):
         # ── 上端: ペインタイトル ──
         outer.addWidget(PaneHeader("参照フォルダ"))
 
-        # ── 事件タブ ──
-        self.case_tabs = QTabBar()
+        # ── 事件タブ ── (cross-case D&D Move の drop ターゲットも兼ねる)
+        self.case_tabs = _DropTabBar(self)
         self.case_tabs.setObjectName("caseTabBar")
         self.case_tabs.setDrawBase(False)
         self.case_tabs.setExpanding(False)
@@ -165,28 +276,63 @@ class CasePane(QWidget):
         self.case_tabs.tabCloseRequested.connect(self._on_case_tab_close)
         outer.addWidget(self.case_tabs)
 
-        # ── 事件フォルダパス兼パンくず: ペイン全幅・中央揃え ──
+        # ── 事件フォルダパス兼パンくず + デスクトップショートカットボタン ──
+        path_row = QHBoxLayout()
+        path_row.setContentsMargins(0, 0, 0, 0)
+        path_row.setSpacing(4)
         self.path_label = QLabel("事件フォルダ:  (事件未選択)")
         self.path_label.setObjectName("casePath")
         self.path_label.setTextFormat(Qt.TextFormat.RichText)
         self.path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.path_label.linkActivated.connect(self._on_crumb_click)
-        outer.addWidget(self.path_label)
+        path_row.addWidget(self.path_label, stretch=1)
+        self.btn_to_case = QPushButton("他事件へ")
+        self.btn_to_case.setObjectName("caseToolBtn")
+        self.btn_to_case.setToolTip(
+            "現在の事件フォルダへのショートカットを\n別事件フォルダの root に置く\n"
+            "(例: 夫婦事件で B 事件フォルダに A 事件のショートカットを置き、\n"
+            " 文書は A に集約する運用)"
+        )
+        self.btn_to_case.clicked.connect(self._show_other_cases_menu)
+        path_row.addWidget(self.btn_to_case)
+        outer.addLayout(path_row)
 
         # ── 下段: 左=サブフォルダボタン / 右=ファイル一覧 ──
         mid = QHBoxLayout()
         mid.setContentsMargins(0, 0, 0, 0)
         mid.setSpacing(2)
 
-        # サブフォルダボタン列 (事件ごとに動的再構築)
-        self.btn_col = QVBoxLayout()
-        self.btn_col.setContentsMargins(0, 0, 0, 0)
-        self.btn_col.setSpacing(0)
+        # サブフォルダボタン列 (上: 動的な閲覧ボタン群 / 下: +/- 管理ボタン)
         self.button_group = QButtonGroup(self)
         self.button_group.setExclusive(True)
         self.button_group.idClicked.connect(self._on_folder_browse)
         btn_container = QWidget()
-        btn_container.setLayout(self.btn_col)
+        container_lay = QVBoxLayout(btn_container)
+        container_lay.setContentsMargins(0, 0, 0, 0)
+        container_lay.setSpacing(0)
+        # 上: 動的サブフォルダ閲覧ボタン (_rebuild_subfolder_buttons で構築)
+        self.btn_col = QVBoxLayout()
+        self.btn_col.setContentsMargins(0, 0, 0, 0)
+        self.btn_col.setSpacing(0)
+        container_lay.addLayout(self.btn_col, stretch=1)
+        # 下: 区切り + 管理ボタン (+追加 / -削除)。固定で永続。
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        sep.setFixedHeight(4)
+        container_lay.addWidget(sep)
+        self.btn_add_subf = QPushButton("+ 追加")
+        self.btn_add_subf.setObjectName("caseToolBtn")
+        self.btn_add_subf.setToolTip("新規サブフォルダを作成 (例: 7_メモ)")
+        self.btn_add_subf.clicked.connect(self._on_add_subfolder)
+        container_lay.addWidget(self.btn_add_subf)
+        self.btn_del_subf = QPushButton("− 削除")
+        self.btn_del_subf.setObjectName("caseToolBtn")
+        self.btn_del_subf.setToolTip(
+            "現在表示中のサブフォルダを削除 (OS のごみ箱へ。事件フォルダ直下は削除不可)"
+        )
+        self.btn_del_subf.clicked.connect(self._on_delete_subfolder)
+        container_lay.addWidget(self.btn_del_subf)
         btn_container.setMaximumWidth(140)
         mid.addWidget(btn_container)
 
@@ -194,7 +340,8 @@ class CasePane(QWidget):
         right_col = QVBoxLayout()
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(0)
-        self.table = QTableWidget(0, 3)
+        # _DragCaseTable: 行を別事件タブへ D&D できる (cross-case Move 起点)
+        self.table = _DragCaseTable(self)
         self.table.setHorizontalHeaderLabels(["Name", "更新", "サイズ"])
         self.table.setIconSize(QSize(13, 13))
         self.table.verticalHeader().setVisible(False)
@@ -307,8 +454,12 @@ class CasePane(QWidget):
 
         self.btn_col.addStretch(1)
 
+        # 中央ストリップに最新のサブフォルダ構成を反映してもらう
+        self.subfoldersChanged.emit()
+
     def _make_view_button(self, view_id: int, label: str) -> QPushButton:
-        btn = QPushButton(label)
+        # _DropButton: Inbox からの D&D を受けて投入要求を発火する
+        btn = _DropButton(view_id, label, self)
         btn.setObjectName("folderBtn")
         btn.setCheckable(True)
         # 右クリック = 投入メニュー (左クリックは閲覧のみ)
@@ -318,6 +469,20 @@ class CasePane(QWidget):
         )
         self.button_group.addButton(btn, view_id)
         return btn
+
+    # ───────── D&D 受信ハンドラ (_DropButton / _DropTabBar から呼ばれる) ─────────
+
+    def _on_inbox_drop(self, view_id: int, src_path: Path) -> None:
+        """サブフォルダボタンに Inbox ファイルが drop された。"""
+        self.inboxDropInjectRequested.emit(
+            view_id, self._view_name(view_id), str(src_path)
+        )
+        # 投入先の中身を表示 (Alt 投入と同じ挙動)
+        self._browse(view_id)
+
+    def _on_case_tab_drop(self, target_idx: int, src_path: Path) -> None:
+        """事件タブに 事件ファイルが drop された (= クロス事件 Move)。"""
+        self.caseTabDropMoveRequested.emit(target_idx, str(src_path))
 
     # ───────── ビュー / ネストナビゲーション ─────────
 
@@ -517,10 +682,214 @@ class CasePane(QWidget):
             self._size_unit = new_unit
             self._show_current()
 
-    def inject_to_current_view(self) -> None:
-        """中央コマンドストリップ ▶▶ ボタン用: 現在表示中のサブフォルダ
-        (または「事件フォルダ直下」) に投入要求を発火 (実投入は M3)。"""
-        self._on_subfolder_inject(self._cur_view_id)
+    # ───────── サブフォルダ管理 / 事件フォルダ管理 (+ / − / デスクトップ) ─────────
+
+    def _on_add_subfolder(self) -> None:
+        """+ ボタン: 新規サブフォルダ作成。"""
+        if self._scan is None:
+            self.actionStatus.emit("事件が未選択です")
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "サブフォルダを追加",
+            "新しいサブフォルダ名を入力してください\n"
+            "(例: 7_メモ、案件メモ、判例集 など)",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not ok:
+            return
+        name = name.strip()
+        err = file_ops.validate_name(name) if name else "ファイル名が空です"
+        if err is not None:
+            QMessageBox.warning(self, "サブフォルダを追加", err)
+            return
+        new_dir = self._scan.root_path / name
+        if new_dir.exists():
+            QMessageBox.warning(
+                self, "サブフォルダを追加",
+                f"同名のフォルダが既に存在します:\n{name}",
+            )
+            return
+        try:
+            new_dir.mkdir()
+        except OSError as e:
+            QMessageBox.critical(
+                self, "サブフォルダを追加", f"作成に失敗しました:\n{e}"
+            )
+            return
+        self.refresh_current_view()
+        self.actionStatus.emit(f"サブフォルダを作成: {name}")
+
+    def _on_delete_subfolder(self) -> None:
+        """− ボタン: 現在表示中のサブフォルダを OS ごみ箱へ送る要求。
+
+        「事件フォルダ直下」ビューでは削除しない (事件本体が消えるのを防ぐ)。
+        実削除と履歴記録は MainWindow (deleteRequested) に委譲。
+        """
+        if self._scan is None or self._cur_view_id == ROOT_VIEW_ID:
+            self.actionStatus.emit(
+                "削除できるサブフォルダが選択されていません (直下は削除不可)"
+            )
+            return
+        if not (0 <= self._cur_view_id < len(self._scan.subfolders)):
+            return
+        sf = self._scan.subfolders[self._cur_view_id]
+        # 削除済ビューに留まらないよう先に root へ
+        self._cur_view_id = ROOT_VIEW_ID
+        self.deleteRequested.emit(str(sf.path))
+
+    def delete_selected_row(self) -> None:
+        """Del キー: 中央テーブルの選択行を削除要求。
+
+        ファイル / ネストフォルダ どちらでも可。`..` 行と未選択は無視。
+        """
+        entry = self.selected_entry()
+        if entry is None:
+            self.actionStatus.emit("削除する行が選択されていません")
+            return
+        path, _is_dir = entry
+        self.deleteRequested.emit(str(path))
+
+    def _show_other_cases_menu(self) -> None:
+        """「他事件へ」ボタン: 開いている他の事件タブをメニュー表示。"""
+        if self._scan is None:
+            self.actionStatus.emit("事件が未選択です")
+            return
+        current_idx = self.case_tabs.currentIndex()
+        others = [
+            (i, self._case_paths[i])
+            for i in range(len(self._case_paths))
+            if i != current_idx
+        ]
+        menu = QMenu(self)
+        if not others:
+            act = menu.addAction("他に開いている事件タブがありません")
+            act.setEnabled(False)
+        else:
+            for _i, path in others:
+                code, name = _parse_case(path)
+                label = f"→ {code}  {name}"
+                act = menu.addAction(label)
+                act.triggered.connect(
+                    lambda _=False, p=path: self._place_shortcut_in_case(p)
+                )
+        menu.exec(self.btn_to_case.mapToGlobal(
+            self.btn_to_case.rect().bottomLeft()
+        ))
+
+    def _place_shortcut_in_case(self, target_case_root: Path) -> None:
+        """現在の事件フォルダのショートカットを target_case_root に置く。"""
+        if self._scan is None:
+            return
+        src_root = self._scan.root_path
+        try:
+            link = create_folder_shortcut(src_root, target_case_root)
+        except OSError as e:
+            QMessageBox.critical(
+                self, "他事件にショートカット作成",
+                f"作成に失敗しました:\n{e}",
+            )
+            return
+        target_code, _ = _parse_case(target_case_root)
+        self.actionStatus.emit(
+            f"{target_code} の root にショートカット作成: {link.name}"
+        )
+
+    def trigger_subfolder_action(self, view_id: int, *, has_inbox: bool) -> None:
+        """中央ストリップ数字ボタン共用エントリ。
+
+        - has_inbox=True (Inbox に選択あり): 投入要求 + 投入先を開く
+        - has_inbox=False: 閲覧のみ (左クリックと同じ)
+        """
+        if view_id not in self._view_btns:
+            return
+        if has_inbox:
+            self._on_subfolder_inject(view_id)
+        else:
+            self._on_folder_browse(view_id)
+
+    def subfolder_button_targets(self) -> list[tuple[str, int]]:
+        """中央ストリップに並べる数字ボタン構成 (label, view_id) を返す。
+
+        ラベルは ">1" 等 — `>` で「Inbox から右のサブフォルダへ移動」を視覚化。
+        実フォルダの動的スキャンに連動 (例: 1_文書〜6_訟務 + 直下=0 → 7 個)。
+        Alt 割当のないサブフォルダ (10 個目以降) は数字ボタンも作らない。
+        """
+        out: list[tuple[str, int]] = []
+        if self._scan is None:
+            return out
+        for i, sf in enumerate(self._scan.subfolders):
+            if sf.alt_key is not None:
+                out.append((f">{sf.alt_key}", i))
+        out.append((">0", ROOT_VIEW_ID))
+        return out
+
+    def view_target_dir(self, view_id: int) -> Path | None:
+        """view_id (サブフォルダ index または ROOT_VIEW_ID) → 投入先ディレクトリ。"""
+        if self._scan is None:
+            return None
+        if view_id == ROOT_VIEW_ID:
+            return self._scan.root_path
+        if 0 <= view_id < len(self._scan.subfolders):
+            return self._scan.subfolders[view_id].path
+        return None
+
+    def current_view_id(self) -> int:
+        """現在閲覧中のビュー ID。投入先 (実際にユーザーが見ているフォルダ)。"""
+        return self._cur_view_id
+
+    def current_case_path(self) -> Path | None:
+        """現在開いている事件フォルダのルート (cross-case D&D 等の判定用)。"""
+        return self._scan.root_path if self._scan is not None else None
+
+    def selected_entry(self) -> tuple[Path, bool] | None:
+        """中央テーブルで選択中の (ファイル|フォルダ) の (path, is_dir)。
+
+        `..` 行や未選択時は None。F2 / Del 等のハンドラから使う。
+        """
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if not isinstance(item, _NameItem) or item.is_parent:
+            return None
+        return item.path, item.is_dir
+
+    def select_path_in_table(self, path: Path) -> None:
+        """指定パスの行を選択状態にする (rename 直後にフォーカスを保つため)。"""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if isinstance(item, _NameItem) and item.path == path:
+                self.table.setCurrentCell(row, 0)
+                return
+
+    def refresh_current_view(self) -> None:
+        """投入・rename・削除後に外部から呼ぶ: 現フォルダ再走査 + サブ件数更新。
+
+        ネストしていた場合はパンくずをできる限り保持する (途中フォルダが消えて
+        いれば残っている所まで戻る)。
+        """
+        if self._scan is None:
+            return
+        prev_view = self._cur_view_id
+        prev_crumb = list(self._crumb)
+        # サブフォルダの件数バッジが変わるので scan を取り直し、左ボタン再構築
+        self._scan = scan_case_folder(self._scan.root_path)
+        self._rebuild_subfolder_buttons()
+
+        target_view = prev_view if prev_view in self._view_btns else (
+            0 if self._scan.subfolders else ROOT_VIEW_ID
+        )
+        self._browse(target_view)
+        # ネストを 1 段ずつ復元 (途中で実体が消えていたらそこで停止)
+        if target_view == prev_view:
+            for name, path in prev_crumb[1:]:
+                if path.is_dir():
+                    self._crumb.append((name, path))
+                    self._cur_dir = path
+                else:
+                    break
+            self._show_current()
 
     # ───────── 事件フォルダ自体の rename (Shift+F2) ─────────
 

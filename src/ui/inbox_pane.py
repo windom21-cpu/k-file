@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QDrag
 from PySide6.QtWidgets import (
     QHeaderView,
     QMenu,
@@ -23,6 +23,34 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from src.core.inbox_watcher import InboxFile, InboxSource, InboxWatcher
+from src.infra.kfile_db import KFileDB
+from src.ui.dnd import SRC_INBOX, make_kfile_mime_data
+from src.ui.pane_header import PaneHeader
+
+
+class _DragTable(QTableWidget):
+    """Inbox 用の ドラッグ起点 QTableWidget。
+
+    drag 開始時に「選択中ファイルの絶対パス + 起点=inbox」を MIME に載せる。
+    drop 先 (サブフォルダボタン等) はこれを見て「投入」と分かる。
+    """
+
+    def __init__(self, pane: "InboxPane") -> None:
+        super().__init__(0, 3, pane)
+        self._pane = pane
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
+
+    def startDrag(self, _actions) -> None:
+        f = self._pane.selected_file()
+        if f is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(make_kfile_mime_data(SRC_INBOX, f.path))
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
+                  Qt.DropAction.CopyAction)
 
 
 def format_size(n: int, unit: str = "KB") -> str:
@@ -51,15 +79,15 @@ class _SizeCell(QTableWidgetItem):
             return self._size < other._size
         return self.text() < other.text()
 
-from src.core.inbox_watcher import InboxFile, InboxWatcher
-from src.infra.kfile_db import KFileDB
-from src.ui.pane_header import PaneHeader
-
 # M2 dev: Inbox 監視対象フォルダ。M5 で settings (kfile.db) から読むようにする。
-_DEV_INBOX_SOURCES: list[tuple[str, Path]] = [
-    ("scan", Path.home() / "k-file-test-data" / "inbox-scan"),
-    ("Desktop", Path.home() / "k-file-test-data" / "inbox-desktop"),
-    ("作業", Path.home() / "k-file-test-data" / "inbox-work"),
+# Desktop は << で戻したファイルが round-trip できるよう、実デスクトップも
+# 同じ "Desktop" ラベルで合流させる (同名ラベル → 同じフィルタタブに集約)。
+# 実 Desktop は長期蓄積場所なので cutoff_days=7 で過去 PDF を自動非表示。
+_DEV_INBOX_SOURCES: list[InboxSource] = [
+    InboxSource("scan", Path.home() / "k-file-test-data" / "inbox-scan"),
+    InboxSource("Desktop", Path.home() / "k-file-test-data" / "inbox-desktop"),
+    InboxSource("Desktop", Path.home() / "デスクトップ", cutoff_days=7),
+    InboxSource("作業", Path.home() / "k-file-test-data" / "inbox-work"),
 ]
 
 # フィルタタブ。"全て" 以外は出所ラベルと一致させる。
@@ -71,6 +99,8 @@ _IGNORED_FG = QColor("#808080")  # 無視ファイルを表示する際のグレ
 class InboxPane(QWidget):
     inboxChanged = Signal(int)   # 無視を除いた実ファイル数 (ステータスバー用)
     fileSelected = Signal(str)   # 選択ファイルのパス (プレビュー用、未選択は "")
+    # Del キーで削除要求 (MainWindow が file_ops.trash + 履歴記録)
+    deleteRequested = Signal(str)
 
     def __init__(self, db: KFileDB, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -102,7 +132,8 @@ class InboxPane(QWidget):
         outer.addWidget(self.filter_tabs)
 
         # ファイル一覧 (CasePane と列構成を統一: Name + 更新 + サイズ、行高 14px)
-        self.table = QTableWidget(0, 3)
+        # _DragTable は drag 起点 (サブフォルダボタンへ D&D 投入できる)。
+        self.table = _DragTable(self)
         self.table.setHorizontalHeaderLabels(["Name", "更新", "サイズ"])
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -273,3 +304,23 @@ class InboxPane(QWidget):
             return None
         item = self.table.item(row, 0)
         return item.text() if item else None
+
+    def selected_file(self) -> InboxFile | None:
+        """選択中の Inbox ファイル (パス込み)。未選択 / 無視済なら None。"""
+        return self._row_file(self.table.currentRow())
+
+    def delete_selected(self) -> None:
+        """Del キー: 選択中の Inbox ファイルを削除要求。"""
+        f = self.selected_file()
+        if f is None:
+            return
+        self.deleteRequested.emit(str(f.path))
+
+    def select_path(self, path: Path) -> None:
+        """指定パスの行を選択 (rename 直後の選択維持用)。"""
+        target = str(path)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == target:
+                self.table.setCurrentCell(row, 0)
+                return

@@ -2,6 +2,10 @@
 
 QMessageBox.about() のモダンな見た目を避け、アプリ本体と同じく
 Frameless + 自作タイトルバー (× のみ) + 灰色 beveled body で再現する。
+
+本文は **QVBoxLayout 直挿し** (内側 QWidget でラップしない) で組む。
+ラッパ QWidget を入れると自身の背景でダイアログの raised 外縁を覆ってしまい、
+border が見えなくなる (RenameDialog と同じ方針)。
 """
 from __future__ import annotations
 
@@ -26,6 +30,8 @@ class AboutDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("aboutDialog")
+        # WA_StyledBackground: QSS の raised 外縁を描かせる (frameless 時必須)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog
         )
@@ -41,9 +47,8 @@ class AboutDialog(QDialog):
         self.title_bar.set_title("k-file のバージョン情報")
         outer.addWidget(self.title_bar)
 
-        # ── 本文 ──
-        body = QWidget()
-        body_l = QVBoxLayout(body)
+        # ── 本文 (内側ラッパ QWidget を作らず QVBoxLayout 直挿し) ──
+        body_l = QVBoxLayout()
         body_l.setContentsMargins(12, 11, 12, 10)
         body_l.setSpacing(7)
 
@@ -63,7 +68,7 @@ class AboutDialog(QDialog):
         app_name = QLabel("k-file — 案件ドキュメント作業台")
         app_name.setObjectName("aboutAppName")
         text_col.addWidget(app_name)
-        text_col.addWidget(QLabel("バージョン M2 (実ファイル接続 + プレビュー)"))
+        text_col.addWidget(QLabel("バージョン M4 (Del / Undo / 投入履歴)"))
         text_col.addWidget(QLabel("法律実務向け 2/3 ペイン型ファイラー"))
         text_col.addStretch(1)
         top.addLayout(text_col, stretch=1)
@@ -90,7 +95,7 @@ class AboutDialog(QDialog):
         btn_row.addWidget(ok)
         body_l.addLayout(btn_row)
 
-        outer.addWidget(body, stretch=1)
+        outer.addLayout(body_l, stretch=1)
 
         # 親ウインドウの中央に配置 (Frameless なので自前で位置決め)
         if parent is not None:

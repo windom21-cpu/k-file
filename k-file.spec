@@ -12,7 +12,11 @@ a = Analysis(
         ('resources/style/win95.qss', 'resources/style'),
         ('resources/icons', 'resources/icons'),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        # send2trash は file_ops 内で関数ローカル import (lazy) のため
+        # 静的解析で取りこぼされないよう明示
+        'send2trash',
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=['tkinter'],

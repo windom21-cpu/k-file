@@ -12,6 +12,20 @@ QMainWindow, QDialog, QWidget {
     background-color: #C0C0C0;
 }
 
+/* ─── Win95 風ダイアログ外縁 (raised bevel) ──────────────────────
+ * Frameless ダイアログ用。Win95 のメッセージボックスや小ダイアログは
+ * 2px 厚の raised 立体縁を持ち、本体 (黒) のウインドウより手前に
+ * 浮き上がって見える。1 層 raised (white/dark) で十分立体に。
+ * 対象: rename / 投入履歴 / About — 同じ frameless 小ダイアログ群。 */
+QDialog#renameDialog,
+QDialog#aboutDialog {
+    background-color: #C0C0C0;
+    border-top: 2px solid #FFFFFF;
+    border-left: 2px solid #FFFFFF;
+    border-right: 2px solid #404040;
+    border-bottom: 2px solid #404040;
+}
+
 /* ─── ボタン (16px 高に統一) ──────────────────────────────────── */
 QPushButton {
     background-color: #C0C0C0;
@@ -275,6 +289,19 @@ QPushButton#folderBtn:checked {
     background: transparent;
     border-top: 1px solid #808080;
     border-bottom: 1px solid #FFFFFF;
+}
+
+/* ─── 事件ペインの小ツールボタン (+追加 / -削除 / ﾃﾞｽｸﾄｯﾌﾟへ) ──
+ * 通常 QPushButton より一回り小さく、列幅・パス行に収まる寸法。 */
+QPushButton#caseToolBtn {
+    padding: 0 4px;
+    min-width: 0;
+    min-height: 14px;
+    max-height: 14px;
+    background-color: #C0C0C0;
+}
+QPushButton#caseToolBtn:disabled {
+    color: #808080;
 }
 
 /* ─── パス表示 ───────────────────────────────────────────── */

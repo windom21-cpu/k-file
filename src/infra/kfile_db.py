@@ -112,5 +112,99 @@ class KFileDB:
             (key, value),
         )
 
+    # ───────── drop_history (投入・rename・削除・移動の履歴 / Undo の元) ─────────
+
+    def record_history(
+        self,
+        action: str,
+        src_path: str,
+        dst_path: str | None,
+        case_code: str,
+        category: str,
+        renamed_to: str,
+        original_name: str,
+        status: str = "ok",
+    ) -> int:
+        """履歴を 1 件追加し、付与された id を返す。
+
+        action は "inject" / "move" / "rename" / "trash" のいずれか。M4 の Undo
+        ではこの id を逆順に辿って逆操作を実行する。
+        """
+        cur = self._conn.execute(
+            "INSERT INTO drop_history "
+            "(action, src_path, dst_path, case_code, category, renamed_to, "
+            " original_name, status, executed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (action, src_path, dst_path, case_code, category, renamed_to,
+             original_name, status, _now()),
+        )
+        return int(cur.lastrowid or 0)
+
+    def recent_history(self, limit: int = 50) -> list[sqlite3.Row]:
+        """新しい順に履歴を取得 (M4 の F12 履歴ビュー用)。"""
+        rows = self._conn.execute(
+            "SELECT * FROM drop_history ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return list(rows)
+
+    def last_undoable_entry(self) -> sqlite3.Row | None:
+        """Ctrl+Z 対象: 最新の status='ok' な inject/move/rename 行。
+
+        trash は OS ごみ箱からの復元動線が別 (Win では右クリック「元に戻す」)
+        なので Ctrl+Z スタックから除外。F12 履歴ビューでは行ごとに表示する。
+        """
+        return self._conn.execute(
+            "SELECT * FROM drop_history "
+            "WHERE status = 'ok' AND action != 'trash' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    def undoable_count(self) -> int:
+        """Ctrl+Z で戻せる件数 (trash 除く)。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM drop_history "
+            "WHERE status = 'ok' AND action != 'trash'"
+        ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def mark_undone(self, entry_id: int) -> None:
+        """履歴 1 行を status='undone' に更新 (Ctrl+Z 成功時に呼ぶ)。"""
+        self._conn.execute(
+            "UPDATE drop_history SET status = 'undone' WHERE id = ?",
+            (entry_id,),
+        )
+
+    # ───────── recent_names (rename ダイアログの候補) ─────────
+
+    def add_recent_name(self, name: str) -> None:
+        """rename で使った名前を頻度カウント込みで記録。"""
+        if not name:
+            return
+        row = self._conn.execute(
+            "SELECT use_count FROM recent_names WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO recent_names(name, last_used_at, use_count) "
+                "VALUES (?, ?, 1)",
+                (name, _now()),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE recent_names SET last_used_at = ?, use_count = ? "
+                "WHERE name = ?",
+                (_now(), int(row["use_count"]) + 1, name),
+            )
+
+    def recent_names(self, limit: int = 20) -> list[str]:
+        """よく使う順 → 最近順 で候補を返す (rename ダイアログの combobox 用)。"""
+        rows = self._conn.execute(
+            "SELECT name FROM recent_names "
+            "ORDER BY use_count DESC, last_used_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [r["name"] for r in rows]
+
     def close(self) -> None:
         self._conn.close()
