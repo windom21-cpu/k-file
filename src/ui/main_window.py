@@ -14,6 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QMainWindow,
     QMenuBar,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core import file_ops, undo_ops
+from src.core.case_repo import CaseRepo
 from src.infra.kfile_db import KFileDB
 from src.infra.recycle_bin import open_recycle_bin
 from src.ui.about_dialog import AboutDialog
@@ -33,8 +35,10 @@ from src.ui.command_strip import CommandStrip
 from src.ui.function_keys_bar import FunctionKeysBar
 from src.ui.history_view import HistoryDialog
 from src.ui.inbox_pane import InboxPane
+from src.ui.open_case_dialog import OpenCaseDialog
 from src.ui.preview_pane import PreviewPane
 from src.ui.rename_dialog import RenameDialog
+from src.ui.settings_dialog import SettingsDialog, load_inbox_sources
 from src.ui.title_bar import TitleBar
 
 # 動的レイアウト用の定数 — _apply_pane_layout の視覚均等計算に使う。
@@ -48,10 +52,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("k-file")
         self.resize(1400, 860)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        # フォルダを k-file ウインドウへ D&D で事件タブ追加 (HANDOVER §2)
+        self.setAcceptDrops(True)
 
         self._inbox_count = 0
         self._preview_visible = False  # 初期は 1:1 二カラム (F3 で展開)
+        self._repo_cache: CaseRepo | None = None
         self._build_layout()
+        # _build_layout 完了後にセッション復元 (case_pane が準備済の状態で)
+        self._restore_session()
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -73,7 +82,9 @@ class MainWindow(QMainWindow):
         self.splitter.setHandleWidth(0)
         self.splitter.setChildrenCollapsible(False)
         self.db = KFileDB()
-        self.inbox_pane = InboxPane(self.db)
+        # 設定から Inbox 監視先を復元 (未設定なら InboxPane の dev 既定が使われる)
+        configured_sources = load_inbox_sources(self.db)
+        self.inbox_pane = InboxPane(self.db, sources=configured_sources)
         self.case_pane = CasePane()
         self.command_strip = CommandStrip()
         self.preview_pane = PreviewPane()
@@ -171,6 +182,11 @@ class MainWindow(QMainWindow):
         self.case_pane.caseTabChanged.connect(self._on_case_tab_changed)
         # 右クリック投入メニューが参照する Inbox 選択ファイルの getter
         self.case_pane.set_inbox_file_getter(self.inbox_pane.selected_file_name)
+        # 事件ショートカット (B 内の A symlink) ダブルクリックの target 判定用に
+        # ksystemz の doc_root を引く getter を注入 (CaseRepo 未設定なら None)
+        self.case_pane.set_doc_root_getter(self._safe_doc_root)
+        # 事件ショートカット activate → 対象事件のタブに切替 (なければ新タブ)
+        self.case_pane.caseShortcutActivated.connect(self._on_case_shortcut)
         # 中央コマンドストリップ: 数字ボタン (動的) / << / ✕ / ↶ ボタン
         self.command_strip.subfolderClicked.connect(self._on_strip_subfolder)
         self.command_strip.returnToDesktopClicked.connect(
@@ -188,6 +204,8 @@ class MainWindow(QMainWindow):
         # Del / − ボタン: 中央 = case 削除 / Inbox = inbox 削除 (経路で履歴の文脈分け)
         self.case_pane.deleteRequested.connect(self._on_case_delete)
         self.inbox_pane.deleteRequested.connect(self._on_inbox_delete)
+        # 事件タブの追加/閉鎖を open_tabs に永続化 (セッション復元用)
+        self.case_pane.casePathsChanged.connect(self._save_open_tabs)
         # Inbox 件数をステータスバーに反映
         self.inbox_pane.inboxChanged.connect(self._on_inbox_changed)
         self._on_inbox_changed(self.inbox_pane.file_count())
@@ -202,7 +220,7 @@ class MainWindow(QMainWindow):
         m_file = mb.addMenu("ファイル(&F)")
         act_open_case = QAction("事件を開く(&O)…", self)
         act_open_case.setShortcut(QKeySequence("Ctrl+O"))
-        act_open_case.setEnabled(False)  # M5 で実装
+        act_open_case.triggered.connect(self._on_open_case)
         m_file.addAction(act_open_case)
         m_file.addSeparator()
         act_quit = QAction("終了(&X)", self)
@@ -245,7 +263,7 @@ class MainWindow(QMainWindow):
         # 将来「フォルダ整合チェック」「履歴の掃除」等もここへ集約する。
         m_tools = mb.addMenu("ツール(&T)")
         act_settings = QAction("設定(&S)…", self)
-        act_settings.setEnabled(False)  # M2 で実装
+        act_settings.triggered.connect(self._on_settings)
         m_tools.addAction(act_settings)
 
         m_help = mb.addMenu("ヘルプ(&H)")
@@ -347,6 +365,166 @@ class MainWindow(QMainWindow):
             self.case_pane.delete_selected_row()
         elif k == 12:
             self._show_history()
+
+    def _case_repo(self) -> CaseRepo | None:
+        """ksystemz.db への RO 接続を遅延作成 (Ctrl+O / セッション復元 等で使う)。
+
+        設定の `ksystemz_db_path` を優先、未設定なら dev fallback
+        (`~/k-file-test-data/ksystemz.db`)。ファイルが無ければ None。
+        """
+        if getattr(self, "_repo_cache", None) is not None:
+            return self._repo_cache
+        path_str = self.db.get_setting("ksystemz_db_path", "") or ""
+        if not path_str:
+            fallback = Path.home() / "k-file-test-data" / "ksystemz.db"
+            if fallback.is_file():
+                path_str = str(fallback)
+        if not path_str:
+            return None
+        try:
+            self._repo_cache = CaseRepo(Path(path_str))
+        except FileNotFoundError:
+            return None
+        return self._repo_cache
+
+    def _safe_doc_root(self) -> Path | None:
+        """case_pane の doc_root getter 用 (例外を抑えて Path or None を返す)。"""
+        repo = self._case_repo()
+        if repo is None:
+            return None
+        try:
+            return repo.doc_root()
+        except OSError:
+            return None
+
+    def _on_case_shortcut(self, target_path: str) -> None:
+        """B フォルダ内 A symlink ダブルクリック → A のタブに切替。"""
+        target = Path(target_path)
+        self.case_pane.add_case_tab(target)
+        code, _ = _parse_case(target)
+        self.statusBar().showMessage(f"事件ショートカットを開きました: {code}", 3000)
+
+    def _restore_session(self) -> None:
+        """前回 open_tabs に保存されていた事件を順次タブに復元。
+
+        repo が未設定 / 該当事件フォルダが見つからない場合はその case_code は
+        スキップ (静かに無視、ステータスバーで件数のみ報告)。
+        """
+        codes = self.db.open_tab_codes()
+        if not codes:
+            return
+        repo = self._case_repo()
+        if repo is None:
+            return
+        restored = 0
+        skipped: list[str] = []
+        for code in codes:
+            folder = repo.resolve_folder(code)
+            if folder is not None:
+                self.case_pane.add_case_tab(folder)
+                restored += 1
+            else:
+                skipped.append(code)
+        if restored:
+            msg = f"前回のセッションを復元: {restored} 件"
+            if skipped:
+                msg += f" (未解決 {len(skipped)} 件)"
+            self.statusBar().showMessage(msg, 4000)
+
+    def _save_open_tabs(self) -> None:
+        """case_pane の現タブ構成を open_tabs テーブルに永続化。"""
+        codes: list[str] = []
+        for p in self.case_pane.case_paths():
+            code, _ = _parse_case(p)
+            if code:
+                codes.append(code)
+        self.db.save_open_tabs(codes)
+
+    # ───────── 外部フォルダの D&D で事件タブ追加 ─────────
+
+    def dragEnterEvent(self, e) -> None:
+        # k-file 内部の D&D (text/uri-list + x-kfile-source) はサブフォルダボタン /
+        # 事件タブが処理するので、MainWindow は手を出さない。
+        from src.ui.dnd import kfile_source_of
+        if kfile_source_of(e.mimeData()) is not None:
+            e.ignore()
+            return
+        # OS ファイラー等からの「フォルダ」を 1 個以上含む drop だけ受け入れる
+        if e.mimeData().hasUrls():
+            for url in e.mimeData().urls():
+                if url.isLocalFile() and Path(url.toLocalFile()).is_dir():
+                    e.acceptProposedAction()
+                    return
+        e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        # dragEnterEvent と同条件で accept (Qt のお作法上、両方実装が必要)
+        from src.ui.dnd import kfile_source_of
+        if kfile_source_of(e.mimeData()) is not None:
+            e.ignore()
+            return
+        if e.mimeData().hasUrls():
+            for url in e.mimeData().urls():
+                if url.isLocalFile() and Path(url.toLocalFile()).is_dir():
+                    e.acceptProposedAction()
+                    return
+        e.ignore()
+
+    def dropEvent(self, e) -> None:
+        from src.ui.dnd import kfile_source_of
+        if kfile_source_of(e.mimeData()) is not None:
+            e.ignore()
+            return
+        added = 0
+        for url in e.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            p = Path(url.toLocalFile())
+            if p.is_dir():
+                self.case_pane.add_case_tab(p)
+                added += 1
+        if added:
+            e.acceptProposedAction()
+            self.statusBar().showMessage(f"事件タブを追加: {added} 件 (フォルダ D&D)", 4000)
+        else:
+            e.ignore()
+
+    def _on_settings(self) -> None:
+        """ツール → 設定…: Inbox 監視先 / ksystemz.db パス を編集。"""
+        current = self.inbox_pane._sources
+        dlg = SettingsDialog(self.db, current, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        # Inbox 監視先を即時反映
+        self.inbox_pane.reload_sources(dlg.applied_sources())
+        # ksystemz.db のキャッシュを破棄 (次回 Ctrl+O で新パスを再オープン)
+        self._repo_cache = None
+        self.statusBar().showMessage("設定を保存しました", 4000)
+
+    def _on_open_case(self) -> None:
+        """Ctrl+O / ファイル→事件を開く: ksystemz から検索して事件タブ追加。"""
+        repo = self._case_repo()
+        if repo is None:
+            self.statusBar().showMessage(
+                "ksystemz.db のパスが未設定です (ツール→設定…で指定)", 5000
+            )
+            return
+        dlg = OpenCaseDialog(repo, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        rec = dlg.selected()
+        if rec is None:
+            return
+        folder = repo.resolve_folder(rec.case_code)
+        if folder is None:
+            self.statusBar().showMessage(
+                f"事件フォルダが見つかりません: {rec.case_code}", 5000
+            )
+            return
+        self.case_pane.add_case_tab(folder)
+        self.statusBar().showMessage(
+            f"事件タブを開きました: {rec.case_code} {rec.client_display}", 4000
+        )
 
     def _open_recycle_bin(self) -> None:
         """編集→ごみ箱を開く: OS ネイティブのごみ箱ウインドウを起動。"""

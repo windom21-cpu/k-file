@@ -206,5 +206,23 @@ class KFileDB:
         )
         return [r["name"] for r in rows]
 
+    # ───────── open_tabs (セッション復元: 前回開いていた事件タブ) ─────────
+
+    def open_tab_codes(self) -> list[str]:
+        """前回保存された事件タブの case_code を順序通りに取得。"""
+        rows = self._conn.execute(
+            "SELECT case_code FROM open_tabs ORDER BY tab_order ASC"
+        )
+        return [r["case_code"] for r in rows]
+
+    def save_open_tabs(self, case_codes: list[str]) -> None:
+        """現在開いている事件タブの case_code 群で open_tabs を置き換える。"""
+        self._conn.execute("DELETE FROM open_tabs")
+        for i, code in enumerate(case_codes):
+            self._conn.execute(
+                "INSERT INTO open_tabs (case_code, tab_order, last_opened_at) "
+                "VALUES (?, ?, ?)", (code, i, _now()),
+            )
+
     def close(self) -> None:
         self._conn.close()

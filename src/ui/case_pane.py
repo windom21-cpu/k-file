@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core import file_ops
-from src.infra.folder_shortcut import create_folder_shortcut
+from src.infra.folder_shortcut import create_folder_shortcut, resolve_shortcut
 
 from src.core.folder_scanner import (
     CaseScan,
@@ -93,12 +93,18 @@ class _NameItem(QTableWidgetItem):
     """
 
     def __init__(
-        self, name: str, is_dir: bool, path: Path, is_parent: bool = False
+        self,
+        name: str,
+        is_dir: bool,
+        path: Path,
+        is_parent: bool = False,
+        is_link: bool = False,
     ) -> None:
         super().__init__(name)
         self.is_dir = is_dir
         self.path = path
         self.is_parent = is_parent
+        self.is_link = is_link    # ショートカット (symlink/.lnk) なら True
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         # PySide6 では super().__lt__() が再帰しクラッシュするため Python 側で比較
@@ -231,6 +237,11 @@ class CasePane(QWidget):
     subfoldersChanged = Signal()
     # 削除要求 (Del キー / − ボタン)。MainWindow が file_ops.trash + 履歴記録を担当
     deleteRequested = Signal(str)                # 削除対象パス
+    # 事件タブの追加/閉鎖で _case_paths が変わった → MainWindow が open_tabs を保存
+    casePathsChanged = Signal()
+    # 事件ショートカット (B フォルダの A symlink/.lnk) のダブルクリック →
+    # MainWindow に target パスを渡して、当該事件タブに切替 (なければ新タブ追加)
+    caseShortcutActivated = Signal(str)
     # ステータスバー通知 (サブフォルダ追加/ショートカット作成等)
     actionStatus = Signal(str)
     fileSelected = Signal(str)                   # 選択ファイルのパス (プレビュー用)
@@ -241,6 +252,9 @@ class CasePane(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 右クリック投入メニューが Inbox の選択ファイルを問い合わせる getter
         self._inbox_file_getter = None
+        # 「事件ショートカット?」判定用に ksystemz の doc_root を引く callback。
+        # MainWindow が CaseRepo.doc_root を遅延評価する関数を注入する。
+        self._doc_root_getter = None
         self._scan: CaseScan | None = None
         self._case_paths: list[Path] = []
         self._case_code = ""
@@ -387,18 +401,17 @@ class CasePane(QWidget):
     # ───────── 事件タブ ─────────
 
     def _load_case_tabs(self) -> None:
-        """doc_root 直下の事件フォルダを走査してタブを作る。"""
-        if _DEV_DOC_ROOT.is_dir():
-            for p in sorted(_DEV_DOC_ROOT.iterdir(), key=lambda x: x.name):
-                if p.is_dir():
-                    self._case_paths.append(p)
-        self.case_tabs.blockSignals(True)
-        for path in self._case_paths:
-            code, name = _parse_case(path)
-            self.case_tabs.addTab(f"{code} {name}")
-        self.case_tabs.blockSignals(False)
-        if self._case_paths:
-            self._load_case(0)
+        """起動時はタブを空で開始する (M5: 自動 load 撤去 — ADR-15)。
+
+        事件タブは外部 (MainWindow) から `add_case_tab()` で構築される:
+          - セッション復元 (前回 open_tabs の事件を順次 add)
+          - Ctrl+O「事件を開く」ダイアログから選択
+          - フォルダ D&D でメインウインドウに drop
+        初期状態は空 (path_label = 「事件未選択」のまま) で、ユーザーが意識的に
+        開く方が業務フロー (どの事件を扱うかを最初に決める) と整合する。
+        """
+        # 何もしない (パス表示は __init__ で「事件未選択」のまま)
+        return
 
     def _load_case(self, idx: int) -> None:
         """事件タブ idx の事件フォルダを読み込み、サブフォルダボタンを再構築。"""
@@ -423,6 +436,23 @@ class CasePane(QWidget):
         if 0 <= idx < len(self._case_paths):
             self._case_paths.pop(idx)
         self.case_tabs.removeTab(idx)
+        # 全タブを閉じた場合の表示クリア (中身が前事件のまま残るのを防ぐ)
+        if not self._case_paths:
+            self._scan = None
+            self._case_code = ""
+            self._case_name = ""
+            self.path_label.setText("事件フォルダ:  (事件未選択)")
+            # サブフォルダボタン群 + ファイル一覧を空に
+            while self.btn_col.count():
+                item = self.btn_col.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    self.button_group.removeButton(w)
+                    w.deleteLater()
+            self._view_btns = {}
+            self.table.setRowCount(0)
+            self.subfoldersChanged.emit()
+        self.casePathsChanged.emit()
 
     # ───────── サブフォルダボタン (事件ごとに再構築) ─────────
 
@@ -508,10 +538,14 @@ class CasePane(QWidget):
         """_cur_dir の中身を表示 (子フォルダ行 + ファイル行) + パンくず更新。"""
         if self._cur_dir is None:
             return
-        # 「事件フォルダ直下」ビューは子フォルダ (= サブフォルダ = 左ボタン)
-        # を出さず、直下ファイルのみ。サブフォルダ配下はフォルダ+ファイル。
+        # 「事件フォルダ直下」ビューは サブフォルダ (1_文書 等) を出さない
+        # (左ボタン列で管理)。ただし **事件ショートカット (symlink/.lnk)** は
+        # 別事件への入口として直下に置かれているので、is_link なら表示する。
         if self._cur_view_id == ROOT_VIEW_ID:
-            entries = list_files(self._cur_dir)
+            entries = [
+                e for e in list_folder(self._cur_dir)
+                if not e.is_dir or e.is_link
+            ]
         else:
             entries = list_folder(self._cur_dir)
         self._populate(entries, self._parent_target())
@@ -537,15 +571,50 @@ class CasePane(QWidget):
             self._show_current()
 
     def _on_table_double_click(self, row: int, _col: int) -> None:
-        """ファイル一覧の行をダブルクリック: `..` は上へ、フォルダなら中へ入る。"""
+        """ファイル一覧の行をダブルクリック: `..` は上へ、ショートカットは
+        事件タブ切替、それ以外のフォルダなら descend。"""
         item = self.table.item(row, 0)
-        if isinstance(item, _NameItem) and item.is_parent:
+        if not isinstance(item, _NameItem):
+            return
+        if item.is_parent:
             self._go_up()
             return
-        if isinstance(item, _NameItem) and item.is_dir:
+        if item.is_link:
+            # 事件ショートカットなら MainWindow にタブ切替を依頼。
+            # 失敗 (target 未解決 / doc_root 外) はフォールバックで通常 descend。
+            if self._try_activate_case_shortcut(item.path):
+                return
+        if item.is_dir:
             self._cur_dir = item.path
             self._crumb.append((item.text(), item.path))
             self._show_current()
+
+    def _try_activate_case_shortcut(self, path: Path) -> bool:
+        """symlink/.lnk のターゲットが ksystemz doc_root 直下の事件フォルダなら
+        caseShortcutActivated を発火して True。それ以外は False (descend に戻す)。
+        """
+        target = resolve_shortcut(path)
+        if target is None:
+            return False
+        if self._doc_root_getter is None:
+            return False
+        try:
+            doc_root = self._doc_root_getter()
+        except OSError:
+            return False
+        if doc_root is None:
+            return False
+        try:
+            target_resolved = target.resolve()
+            root_resolved = Path(doc_root).resolve()
+        except OSError:
+            return False
+        if target_resolved.parent != root_resolved:
+            return False    # doc_root 直下の事件フォルダではない
+        if not target_resolved.is_dir():
+            return False
+        self.caseShortcutActivated.emit(str(target_resolved))
+        return True
 
     def _on_table_selection(self) -> None:
         """行選択が変わったら、ファイルならパスを通知 (フォルダ・未選択は "")。"""
@@ -636,7 +705,15 @@ class CasePane(QWidget):
             row += 1
 
         for e in entries:
-            name_item = _NameItem(e.name, e.is_dir, e.path)
+            # ショートカット行は ↗ プレフィックス + .lnk 拡張子を表示から省く
+            display_name = e.name
+            if e.is_link and display_name.lower().endswith(".lnk"):
+                display_name = display_name[:-4]
+            if e.is_link:
+                display_name = "↗ " + display_name
+            name_item = _NameItem(
+                display_name, e.is_dir, e.path, is_link=e.is_link,
+            )
             if e.is_dir:
                 name_item.setIcon(self._dir_icon)
             self.table.setItem(row, 0, name_item)
@@ -842,6 +919,33 @@ class CasePane(QWidget):
         """現在開いている事件フォルダのルート (cross-case D&D 等の判定用)。"""
         return self._scan.root_path if self._scan is not None else None
 
+    def add_case_tab(self, path: Path) -> int:
+        """事件フォルダを新規タブとして開く (既に開いていればそれに切替)。
+
+        Ctrl+O「事件を開く」やフォルダ D&D 経由で呼ばれる。重複時は新タブを
+        作らずに既存タブをアクティブにする。casePathsChanged を発火。
+        """
+        path = Path(path)
+        for i, existing in enumerate(self._case_paths):
+            if existing == path:
+                if self.case_tabs.currentIndex() != i:
+                    self.case_tabs.setCurrentIndex(i)
+                return i
+        # 新規追加
+        self._case_paths.append(path)
+        code, name = _parse_case(path)
+        new_idx = self.case_tabs.addTab(f"{code} {name}")
+        # 初回の addTab は currentChanged を発火するので _load_case 自動呼出し。
+        # 2 件目以降は自動選択されないので明示的に setCurrentIndex で発火させる。
+        if self.case_tabs.currentIndex() != new_idx:
+            self.case_tabs.setCurrentIndex(new_idx)
+        self.casePathsChanged.emit()
+        return new_idx
+
+    def case_paths(self) -> list[Path]:
+        """開いている事件タブのパス一覧 (左端から順)。セッション保存用。"""
+        return list(self._case_paths)
+
     def selected_entry(self) -> tuple[Path, bool] | None:
         """中央テーブルで選択中の (ファイル|フォルダ) の (path, is_dir)。
 
@@ -989,3 +1093,11 @@ class CasePane(QWidget):
         getter() は選択中ファイル名 (str)、未選択なら None を返すこと。
         """
         self._inbox_file_getter = getter
+
+    def set_doc_root_getter(self, getter) -> None:
+        """事件ショートカット判定に使う ksystemz doc_root の getter。
+
+        getter() は ksystemz の doc_root_path (Path) または None を返す。
+        None なら全 symlink/.lnk は通常フォルダとして扱う (タブ切替しない)。
+        """
+        self._doc_root_getter = getter

@@ -28,7 +28,8 @@ class FileEntry:
     path: Path
     is_dir: bool
     size: int      # ファイルのバイト数。フォルダは 0
-    mtime: float   # 最終更新 (epoch 秒)
+    mtime: float
+    is_link: bool = False  # Linux symlink / Win .lnk なら True (事件ショートカット判定用)   # 最終更新 (epoch 秒)
 
 
 @dataclass
@@ -52,14 +53,21 @@ class CaseScan:
 
 
 def _to_entry(p: Path) -> FileEntry:
-    st = p.stat()
+    st = p.stat()                     # follows symlinks → is_dir reflects target
     is_dir = p.is_dir()
+    # Linux: シンボリックリンクは is_symlink() = True、target に追随して is_dir も決まる
+    # Win:   .lnk はただのファイル (is_symlink() = False、suffix=.lnk で判定)
+    try:
+        is_link = p.is_symlink() or p.suffix.lower() == ".lnk"
+    except OSError:
+        is_link = False
     return FileEntry(
         name=p.name,
         path=p,
         is_dir=is_dir,
         size=0 if is_dir else st.st_size,
         mtime=st.st_mtime,
+        is_link=is_link,
     )
 
 
@@ -108,9 +116,16 @@ def scan_case_folder(path: Path) -> CaseScan:
             children = []
         for p in children:
             try:
-                if p.is_dir():
+                # ショートカット (Linux symlink / Win .lnk) は左ボタン列の
+                # サブフォルダ扱いせず、「事件フォルダ直下」ビューに出す
+                # (別事件への入口は分類カテゴリではないため)。
+                try:
+                    is_link = p.is_symlink() or p.suffix.lower() == ".lnk"
+                except OSError:
+                    is_link = False
+                if p.is_dir() and not is_link:
                     dirs.append(p)
-                elif p.is_file():
+                elif p.is_file() or is_link:
                     root_files.append(_to_entry(p))
             except OSError:
                 continue

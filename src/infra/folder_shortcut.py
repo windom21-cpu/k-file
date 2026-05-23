@@ -59,6 +59,47 @@ def _make_symlink(target: Path, dest_dir: Path, name: str) -> Path:
     return link_path
 
 
+def resolve_shortcut(path: Path) -> Path | None:
+    """OS ネイティブのショートカット (Linux symlink / Win .lnk) のターゲットを返す。
+
+    解決できない (非シンボリックリンク / 壊れたリンク / .lnk 解析失敗 等) は None。
+    case_pane が事件ショートカットの動作判定に使う。
+    """
+    p = Path(path)
+    try:
+        if p.is_symlink():
+            try:
+                return p.resolve()
+            except OSError:
+                return None
+    except OSError:
+        return None
+    if sys.platform == "win32" and p.suffix.lower() == ".lnk" and p.is_file():
+        return _read_windows_lnk_target(p)
+    return None
+
+
+def _read_windows_lnk_target(lnk_path: Path) -> Path | None:
+    """.lnk の TargetPath を PowerShell の COM 経由で読む (作成側と同じ流儀)。"""
+    p_esc = str(lnk_path).replace("'", "''")
+    cmd = [
+        "powershell.exe", "-NoProfile", "-Command",
+        f"$ws = New-Object -ComObject WScript.Shell; "
+        f"$s = $ws.CreateShortcut('{p_esc}'); "
+        f"Write-Output $s.TargetPath",
+    ]
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=5
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    target = res.stdout.strip()
+    return Path(target) if target else None
+
+
 def _make_windows_lnk(target: Path, dest_dir: Path, name: str) -> Path:
     lnk_path = dest_dir / f"{name}.lnk"
     if lnk_path.exists():

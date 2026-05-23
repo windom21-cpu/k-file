@@ -102,7 +102,12 @@ class InboxPane(QWidget):
     # Del キーで削除要求 (MainWindow が file_ops.trash + 履歴記録)
     deleteRequested = Signal(str)
 
-    def __init__(self, db: KFileDB, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        db: KFileDB,
+        sources: list[InboxSource] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("inboxPane")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -111,6 +116,9 @@ class InboxPane(QWidget):
         self._ignored: set[str] = set()     # 無視ファイルの絶対パス
         self._show_ignored = False
         self._size_unit = "KB"              # ヘッダー右クリックで KB/MB 切替
+        # sources 未指定なら dev 既定 (実 Desktop 含む)。設定ダイアログ完了後は
+        # MainWindow が settings 経由でパスを渡す。
+        self._sources = sources if sources is not None else _DEV_INBOX_SOURCES
 
         outer = QVBoxLayout(self)
         # 右に 2px: #inboxPane の border-right (2px) を描画する領域を確保。
@@ -162,7 +170,20 @@ class InboxPane(QWidget):
         outer.addWidget(self.table, stretch=1)
 
         # 監視対象フォルダを QFileSystemWatcher で監視 (変更で自動更新)
-        self._watcher = InboxWatcher(_DEV_INBOX_SOURCES, self)
+        self._watcher = InboxWatcher(self._sources, self)
+        self._watcher.changed.connect(self.refresh)
+        self.refresh()
+
+    def reload_sources(self, sources: list[InboxSource]) -> None:
+        """設定変更時に監視先を差し替える (古い QFileSystemWatcher を破棄)。"""
+        if self._watcher is not None:
+            try:
+                self._watcher.changed.disconnect(self.refresh)
+            except (TypeError, RuntimeError):
+                pass
+            self._watcher.deleteLater()
+        self._sources = sources
+        self._watcher = InboxWatcher(self._sources, self)
         self._watcher.changed.connect(self.refresh)
         self.refresh()
 
