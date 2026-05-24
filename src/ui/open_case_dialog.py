@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.case_repo import CaseRecord, CaseRepo
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
 
