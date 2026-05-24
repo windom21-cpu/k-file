@@ -6,12 +6,12 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M3 投入 + cross-case Move ✅ / M4 Del + Undo + 履歴 ✅ / M5 K-SystemZ 連携 + 設定 + セッション復元 ✅ 完了 (2026-05-23)。次は Win 機検証 → β タグ**
+- 現在地: **M3 / M4 / M5 完了 (2026-05-23) → M5b UX polish 完了 (2026-05-24)。次は Win 機検証 → β タグ (v0.1.0-beta.1)**
 - スタック: Python + PySide6、PyInstaller で .exe 配布
-- UI 方針: Windows95/98 風 (MS UI Gothic / 灰色 / beveled / 高密度業務アプリ感)
+- UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (単一リポへ直 upload)
-- テスト: 55 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py`) 全緑
+- テスト: 62 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py`) 全緑
 
 ---
 
@@ -223,6 +223,17 @@
 - **M3 投入 + cross-case 移動 (✅ 2026-05-23 完了)**: `core/file_ops.py` (Copy→検証→元削除 / Move / 衝突自動連番 / send2trash)、Alt+0〜9 / 右クリック / D&D で即時投入 (rename ダイアログを挟まない — ADR-7)、**F2 = 単独 rename ダイアログ** + recent_names 候補、cross-case D&D Move (同名サブフォルダ自動マッピング)、`drop_history` 記録、ステータスバー反映、Inbox 更新日時フィルタ (cutoff_days)。詳細 §7
 - **M4 Undo + 削除 + 履歴 (✅ 2026-05-23 完了)**: Del / F8 / − ボタン → OS ごみ箱 (`file_ops.trash`) + 履歴記録、Ctrl+Z Undo (inject/move/rename — trash は除外 ADR-13)、↶ ボタン enable 状態管理、F12 投入履歴ビュー (テキスト版、各行から個別 Undo)、「ごみ箱を開く」(編集メニュー) で Windows ネイティブ Recycle Bin を起動。サムネは後回し
 - **M5 K-SystemZ 連携 + 設定 + セッション復元 (✅ 2026-05-23 完了)**: 「事件を開く」ダイアログ (Ctrl+O) で `core/case_repo.CaseRepo` 経由の RO 検索 (cases + case_persons + persons join、active_only フィルタ)、複数事件タブ同時開き、セッション復元 (`open_tabs` テーブル)、フォルダ D&D で事件タブ追加 (mainwindow への drop イベント)、設定ダイアログ (`ui/settings_dialog.py` Inbox 監視先 / ksystemz.db パス 編集)、事件ショートカット (B 内の A symlink) のダブルクリックで A タブへ切替 (ADR-16)。起動時タブ自動 load 撤去 (ADR-15)。**ksystemz.db 本体は持ち出さずモック (`tests/fixtures/build_mock_ksystemz_db.py`) で Linux 実装 → Win 機検証フロー** (詳細 §8)。Win 機検証完了で **β タグ** (v0.1.0-beta.1) 開始予定
+- **M5b UX polish (✅ 2026-05-24 完了)**: β 配布前の磨き込みセッション。詳細 §7 (M5b セクション)。主要点:
+  - **MS Gothic 12pt 埋め込みビットマップを全 widget に強制適用** — Qt 既定のベクトル AA を上書き (ADR-17)
+  - **複数選択対応** (両テーブル ExtendedSelection): Shift/Ctrl で多選択 → D&D / Del / Alt 投入が batch 化
+  - **D&D 視覚フィードバック**: ドラッグ中の黄色付箋 + drop ターゲット強調
+  - **F6 雑記録 / F7 一時保管** クイック起動 (kfile.db settings)
+  - **タブキーで Inbox ↔ 中央ファイル一覧 を往復**、Enter キー / ダブルクリックで OS 既定アプリ起動
+  - **ファイル一覧/タブ右クリックメニュー** (Explorer で開く / フルパスコピー / 他を閉じる 等)
+  - **プレビュー上部固定ヘッダー** (ファイル名 / サイズ / 更新日 / ページ数)
+  - **ステータスバー 2 分割** (左 = showMessage / 右 = 選択ファイル フルパス)
+  - **ウインドウサイズ永続化**、Inbox/中央ファイル名列の幅同期 (ADR-18)、孫フォルダへ Inbox D&D 投入、KB/MB 切替時にソート維持、サブフォルダボタン末尾省略 (…)
+  - **UI 整理**: 半角カタカナ メニュー (ﾌｧｲﾙ / ﾂｰﾙ / ﾍﾙﾌﾟ) と「参照ﾌｫﾙﾀﾞ」、タイトルバー = `K-FILE`、`<DIR>` (フォルダ行)、`.PDF` 大文字拡張子、削除ボタン (無視と分離)、「他事件へ」→ `↗` アイコン化、ダイアログは 9pt + raised 外縁 2px 内側マージン
 - **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (事件フォルダ以外も可)、PyInstaller .exe + GitHub Actions ビルド、Win 機で業務並走 → v1.0 stable
   - ※フォルダ既定ハンドラの OS 乗っ取りは行わない (§15 ADR-2)。literal な「Explorer ダブルクリック→k-file」は、やるとしても Win 実機実験 → 上級者向け自己責任トグル止まり
 
@@ -370,6 +381,108 @@
 
 #### About 修正
 - ✅ Win95 raised 外縁適用 (内側 QWidget ラッパを撤去、QSS border が見えるように)、バージョン表示を M5 に更新
+
+### M5b UX polish (2026-05-24 完了)
+
+β 配布前にユーザー (sk21) と 1 セッション集中で磨き込んだ項目。実機ワーク
+フロー (法律実務) でのリズムを保つことを優先。コード行数は増えていない
+箇所も多いが、利用者体感は段違いに向上 (M5 完了時 → β 直前)。
+
+#### フォント / 描画
+- ✅ **MS Gothic 12pt 埋め込みビットマップを全 widget に強制** (ADR-17): `src/ui/_font_strategy.py`
+  に `apply_bitmap_font_strategy(root, point_size=None)` を新設、`QFont.StyleStrategy(PreferBitmap | NoAntialias)`
+  を MainWindow + 全ダイアログの widget tree に walking 適用。QSS で
+  font-family を指定すると Qt が strategy をリセットするため、表示後に
+  Python 側で再付与する必要があった (Qt 既定はベクトル + AA で「滑らかな
+  MS Gothic 風」になり、当時の質感が出ない)
+- ✅ **QSS フォント宣言を `*` グローバル 1 箇所に集約** — 個別 rule から
+  font-family / font-size: 12pt 重複を全削除し継承で表現。例外サイズ (9pt
+  ステータスバー / タイトルバーボタン等) のみ残置。font 変更は QSS の 1 箇所だけ
+- ✅ **ツールチップも同じ MS Gothic 12pt ビットマップ** (`QToolTip.setFont` +
+  QSS の `QToolTip` Win95 風クリーム色)
+- ✅ **ダイアログは 9pt + 専用 QSS スコープ** (`#aboutDialog *, #renameDialog *`)
+  で本体 12pt と差別化。raised 外縁 2px を尊重するため outer マージン 2px に統一
+
+#### 複数選択 (両テーブル multi-select)
+- ✅ Inbox / 中央テーブルを ExtendedSelection モードに (Shift で範囲 / Ctrl で個別)
+- ✅ `make_kfile_mime_data(source, paths: Path | list[Path])` で D&D MIME を
+  多パス対応に拡張、startDrag は全選択をのせる
+- ✅ MainWindow に `_batch_inject(srcs, target_dir, category, suffix)` ヘルパを抽出 —
+  4 つの inject / cross-case Move ハンドラを batch ループ化、1 件成功時は
+  従来通り個別名、複数成功時は `N ファイル → A 事件 / 1_文書 に投入 (衝突回避 X 件)`
+- ✅ Del / 削除ボタン / Alt+0〜9 / ストリップ数字ボタン / 無視 全てが全選択対応
+
+#### D&D 視覚フィードバック
+- ✅ `src/ui/dnd.py` に `make_drag_pixmap(names)` 追加 — ドラッグ中にカーソル右下に
+  Win95 風黄色付箋でファイル名 (複数なら「先頭名 他 N 件」)
+- ✅ drop ターゲットの hover 強調 — drag enter で背景黄色 + 紺色枠、leave / drop で復帰
+  (サブフォルダボタン / 中央テーブル)
+- ✅ **テーブル全体への drop = 現在表示中フォルダに投入** (孫フォルダ含む) —
+  フォルダ行ピンポイント不要、孫階層に降りた状態で投げれば孫に入る
+
+#### キーボード操作
+- ✅ **Tab / Shift+Tab で Inbox ↔ 中央ファイル一覧 を往復** (移動先で未選択時は
+  先頭行を自動選択 → 即操作開始)
+- ✅ **Enter / Return** で選択ファイルを OS 既定アプリ起動 (両テーブル)。
+  case_pane では Enter でフォルダ descend / `..` で上 / ショートカットで事件タブ切替 もサポート
+- ✅ **F6 雑記録 / F7 一時保管** クイック起動 — `kfile.db` settings (`quick_notes_path`
+  / `quick_temp_path`) で各フォルダを設定、ファンクションキーバーが動的に
+  enable / label / tooltip 切替、F キー or セルクリックで `add_case_tab(path)` (任意フォルダタブ機構を流用)
+
+#### 右クリックメニュー拡張
+- ✅ Inbox: 既定アプリで開く / Explorer で開く / フルパスをコピー (+ 既存の無視トグル)
+- ✅ 中央テーブル: 同上 (ファイル) / Explorer で開く (フォルダ)
+- ✅ 事件タブ: このタブを閉じる / 他のタブを閉じる / すべて閉じる / Explorer で開く / フルパスをコピー
+
+#### プレビュー固定ヘッダー
+- ✅ `preview_pane.py` 上部に `previewInfo` QLabel 常設 — ファイル名 / サイズ /
+  更新日時 / 追加情報 (PDF=N ページ, 画像=W×H px) を `/` 区切りで 1 行表示。
+  プレビュー本体より目立たないよう本体と同じ 12pt MS Gothic ビットマップ
+
+#### ステータスバー 2 分割
+- ✅ 左 = 通常 `showMessage` (移動/投入の動的通知)、右 = 選択ファイルのフルパス
+  (`path_status_label`、addPermanentWidget、9pt、sunken 区切り線付き)
+- ✅ 複数選択時は右側が `<複数選択>` に切替 (selectionModel.selectionChanged 監視)
+
+#### ウインドウ / レイアウト
+- ✅ **ウインドウサイズ永続化** — `closeEvent` で `window_width` / `window_height` /
+  `window_maximized` を kfile.db settings に保存、起動時に復元
+- ✅ **Inbox 幅 ≒ 中央ファイル名列幅 を完全同期** (ADR-18) — splitter の
+  `setStretchFactor` を撤去、`resizeEvent` で `QTimer.singleShot(0)` 経由
+  で `_apply_pane_layout` を再計算 (Qt のレイアウトパス後に setSizes 適用)。
+  両テーブルとも vertical scrollbar 常時表示で viewport 幅一致
+- ✅ プレビュー 3 カラム時も同公式で Inbox = case_table = preview/2 を成立
+- ✅ レスポンシブ列幅: 更新列は viewport 余地に応じて 110→0 まで縮み、30px 未満なら自動非表示 (Name 列優先)
+- ✅ **タブが多数で見えなくなる問題** を Qt 標準動作 (setUsesScrollButtons=True +
+  Expanding=False + setSizePolicy(Expanding, Fixed)) に整理
+
+#### ファイル列 (Name + EXT 分離)
+- ✅ Name 列は **stem 表示** (拡張子除去) + 別列 **拡張子** (大文字 `.PDF` `.JPEG`)
+- ✅ 列幅: Name (Stretch) / EXT 60 / 更新 110 / サイズ 90
+- ✅ 行間に細いグレー線 (`border-bottom: 1px solid #D8D8D8`) で alternating row と併用
+- ✅ ソート: 初回のみ既定 (case=Name 昇順 / Inbox=更新降順) を適用、以降は
+  sortIndicator を尊重 — KB/MB 切替やリフレッシュで「勝手に既定順に戻らない」(ユーザー要望)
+- ✅ プレビュー展開時 (3 カラム) は EXT / 更新 / サイズ を自動非表示 → Name のみ
+- ✅ `<DIR>` (フォルダ行サイズ列、`..` 行含む)、フォルダアイコン廃止 (DOS ファイラー風)
+
+#### UI ラベル整理
+- ✅ メニューバー: `ﾌｧｲﾙ(F) 編集(E) 表示(V) ﾂｰﾙ(T) ﾍﾙﾌﾟ(H)` (カタカナ語は半角、漢字は維持)
+- ✅ 「参照ﾌｫﾙﾀﾞ」 (パンくず・テーブル列ヘッダーは漢字維持)
+- ✅ タイトルバー: `K-FILE` のみ (副題撤去)、アプリ名表示は `K-FILE` で統一
+  (About のタイトル / ヘルプメニュー も `K-FILE` に統一、内部識別子 `k-file` は維持)
+- ✅ パスバーから「事件フォルダ:」プレフィックス削除 → `R060200044 鈴木花子 離婚 › 1_文書` のみ
+- ✅ 「他事件へ」ボタン → `↗` アイコンのみ (ツールチップで説明)
+- ✅ 中央ストリップの `✕` → 「無視」テキスト、削除ボタンを別途追加 (誤認防止)
+- ✅ サブフォルダボタンに hover で末尾省略 (…) — fontMetrics.elidedText、ツールチップでフル名
+- ✅ 高さ統一: タイトルバー / メニューバー / ファンクションキー / タブを 12pt が窮屈にならない 18〜22px に揃え、ボタン間に 2px のすき間
+
+#### 孫フォルダへの Inbox D&D
+- ✅ `_DragCaseTable` を `DragDropMode.DragDrop` に変更 — 自身からの drag-OUT
+  (cross-case Move) + Inbox からの drop-IN を同居
+- ✅ `inboxDropToFolderRequested(target_dir: str, src_paths: list[str])` 新シグナル
+  → `_on_inbox_drop_to_folder` で `_batch_inject` を呼ぶ
+- ✅ 孫フォルダ・曾孫フォルダ等、サブフォルダボタンに割当のない深い階層への
+  投入手段 (操作: 親サブに入って、孫に降りて、Inbox から drag drop)
 
 ---
 
@@ -666,6 +779,36 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
 - **決定**: M5 K-SystemZ 連携は **引き継ぎ書スキーマからモック ksystemz.db を生成して Linux で実装** → CI で .exe ビルド → Win 機で実 DB に対して検証 → エッジケース修正、というワークフローで進める (HANDOVER §8 Phase A/B/C 参照)。
 - **守るべき**: モック DB は完全にフィクション (架空の依頼者名 / case_code R060200042..)、リポジトリには `ksystemz.db` を一切含めない。本物の DB は Win 機側のみで運用。
 - **Phase C (Win 機検証) で発見されたエッジケース** は Win 機側で修正 push → 本機 pull、または本機で再現可能なら本機で修正。
+
+### ADR-17: MS Gothic は埋め込みビットマップ + AA オフを全 widget に強制 (2026-05-24)
+- **経緯**: Qt は標準で TrueType ベクトル + アンチエイリアスで描画するため、
+  fontconfig 側で `embeddedbitmap=true` を指定していても無視され、「滑らかな
+  MS Gothic 風」になって当時の Win95/98 質感が出ない。QSS 側で `font-family`
+  を指定すると Qt が QFont の `StyleStrategy` をリセットするため、`QApplication.setFont`
+  だけでは継承されない。
+- **決定**: ヘルパ `src/ui/_font_strategy.py::apply_bitmap_font_strategy(root, point_size=None)`
+  を新設し、MainWindow + 全ダイアログ (About / Settings / OpenCase / Rename /
+  History) で **QSS 適用後の widget tree を walking** して `QFont.StyleStrategy(PreferBitmap | NoAntialias)`
+  を再付与。`QToolTip.setFont()` でもツールチップに同戦略を適用。
+- **副次効果**: QSS の `font-family` 指定はもはや 1 箇所 (`*` グローバル) に集約可能になった
+  (個別 rule は font-size のみ例外指定。`font-family` を書くとそこから下は再び strategy リセット)。
+- **新規ダイアログを追加する時** は `apply_bitmap_font_strategy(self)` を `__init__` 末尾で呼ぶこと。
+  ダイアログ 9pt なら `apply_bitmap_font_strategy(self, point_size=9)`。
+
+### ADR-18: Inbox 幅 ≒ 中央ファイル名列幅 を resize の度に強制計算 (2026-05-24)
+- **経緯**: 旧コードでは splitter に `setStretchFactor(0,1)(1,2)(2,2)` を設定して
+  あったため、プレビュー非表示時にその 2/5 分が中央に流れ、Inbox が 1/5 のまま
+  になって「Name 列の幅が全然違う」状態が発生していた。
+- **決定**: stretch factor を全削除し、`MainWindow.resizeEvent` で `QTimer.singleShot(0, _apply_pane_layout)`
+  → Qt のレイアウトパス後に `setSizes` を実行する方式に統一。`_CASE_LEFT_OFFSET=148`
+  (= 3 outer margin + 2 border + 140 btn_container fixed + 2 spacing + 2 border + 3 outer margin - 4 Inbox 側 ロス) を反映。
+- **必須前提**: `btn_container.setFixedWidth(140)` で固定幅化、両テーブルに
+  `setVerticalScrollBarPolicy(ScrollBarAlwaysOn)` で viewport 幅を完全一致。
+- **3 カラムモード時** も同公式で `inbox = (usable - offset)/4` を採用 → preview は 2*inbox 幅。
+- **教訓** (反省): 当初「フォントレンダリング差」を疑って font metrics 計測まで
+  走ったが、本当の原因は **splitter の stretch factor + Qt のレイアウトタイミング**
+  だった。ユーザーが先に「splitter サイズ不揃いでは」と指摘していたが私が拾えなかった。
+  「直接コストの低い仮説」から検証する順序を守ること。
 
 ---
 

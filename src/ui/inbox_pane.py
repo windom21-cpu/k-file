@@ -12,8 +12,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QDrag
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHeaderView,
     QMenu,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from src.core.inbox_watcher import InboxFile, InboxSource, InboxWatcher
 from src.infra.kfile_db import KFileDB
-from src.ui.dnd import SRC_INBOX, make_kfile_mime_data
+from src.ui.dnd import SRC_INBOX, make_drag_pixmap, make_kfile_mime_data
 from src.ui.pane_header import PaneHeader
 
 
@@ -37,18 +37,42 @@ class _DragTable(QTableWidget):
     drop 先 (サブフォルダボタン等) はこれを見て「投入」と分かる。
     """
 
+    # Tab / Shift+Tab で 中央テーブルにフォーカス移動 (MainWindow が結線)
+    tabPressed = Signal()
+
     def __init__(self, pane: "InboxPane") -> None:
-        super().__init__(0, 3, pane)
+        super().__init__(0, 4, pane)
         self._pane = pane
         self.setDragEnabled(True)
         self.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
 
+    def keyPressEvent(self, e) -> None:
+        # Tab / Shift+Tab → 相手テーブルにフォーカス移動 (Qt 既定の focus
+        # チェーン経由だと間にボタン等が挟まって遠回りになるため奪取)
+        if e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self.tabPressed.emit()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # ペイン側のレスポンシブ列調整に通知 (狭い時は更新列を譲ってファイル名優先)
+        if hasattr(self._pane, "_apply_responsive_columns"):
+            self._pane._apply_responsive_columns()
+
     def startDrag(self, _actions) -> None:
-        f = self._pane.selected_file()
-        if f is None:
+        files = self._pane.selected_files()
+        if not files:
             return
         drag = QDrag(self)
-        drag.setMimeData(make_kfile_mime_data(SRC_INBOX, f.path))
+        drag.setMimeData(
+            make_kfile_mime_data(SRC_INBOX, [f.path for f in files])
+        )
+        # ドラッグ中にカーソル横に黄色い付箋でファイル名表示 (掴んでいることの可視化)
+        from PySide6.QtCore import QPoint
+        drag.setPixmap(make_drag_pixmap([f.name for f in files]))
+        drag.setHotSpot(QPoint(-12, -12))
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
                   Qt.DropAction.CopyAction)
 
@@ -139,30 +163,44 @@ class InboxPane(QWidget):
         self.filter_tabs.currentChanged.connect(self._refresh_view)
         outer.addWidget(self.filter_tabs)
 
-        # ファイル一覧 (CasePane と列構成を統一: Name + 更新 + サイズ、行高 14px)
+        # ファイル一覧 (CasePane と列構成を統一: Name + EXT + 更新 + サイズ、行高 18px)
         # _DragTable は drag 起点 (サブフォルダボタンへ D&D 投入できる)。
         self.table = _DragTable(self)
-        self.table.setHorizontalHeaderLabels(["Name", "更新", "サイズ"])
+        self.table.setHorizontalHeaderLabels(["Name", "拡張子", "更新", "サイズ"])
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.table.verticalHeader().setDefaultSectionSize(14)
-        self.table.verticalHeader().setMinimumSectionSize(14)
-        self.table.horizontalHeader().setFixedHeight(15)
+        self.table.verticalHeader().setDefaultSectionSize(18)
+        self.table.verticalHeader().setMinimumSectionSize(18)
+        self.table.horizontalHeader().setFixedHeight(17)
         self.table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
-        self.table.setColumnWidth(1, 90)
-        self.table.setColumnWidth(2, 70)
+        self.table.setColumnWidth(1, 60)    # 拡張子 (.PDF / .JPEG)
+        self.table.setColumnWidth(2, 110)   # 更新 (12pt 等幅で YYYY-MM-DD)
+        self.table.setColumnWidth(3, 90)    # サイズ
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        # 複数選択可能 (Shift で範囲 / Ctrl で個別 toggle)。投入 / 削除 / D&D は
+        # 全選択行に対して順次実行される。
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
+        # 縦スクロールバーを常時表示 (CasePane と viewport 幅を揃え、Name 列幅を
+        # 両ペインで一致させるため。AsNeeded だと片方だけ 12px 狭くなる)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         # ヘッダー左クリック = ソート / 既定は「更新」降順 (新着順を維持)
         self.table.setSortingEnabled(True)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_file_menu)
         self.table.itemSelectionChanged.connect(self._on_selection)
+        # ダブルクリック / Enter → OS 既定アプリで開く
+        self.table.cellDoubleClicked.connect(self._open_selected_with_default_app)
+        sc_open = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
+        sc_open.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_open.activated.connect(self._open_selected_with_default_app)
+        sc_open_kp = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
+        sc_open_kp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_open_kp.activated.connect(self._open_selected_with_default_app)
         # ヘッダー右クリック (サイズ列のみ) → KB/MB 切替メニュー
         hdr = self.table.horizontalHeader()
         hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -173,6 +211,38 @@ class InboxPane(QWidget):
         self._watcher = InboxWatcher(self._sources, self)
         self._watcher.changed.connect(self.refresh)
         self.refresh()
+
+    def set_compact(self, compact: bool) -> None:
+        """プレビュー展開時 (3 カラムモード) は Name 列のみに絞り、
+        ペインが狭くてもファイル名が読めるようにする。
+
+        Inbox 幅 = 全体の 1/5 程度になるため EXT / 更新 / サイズ は
+        並べる余地がない。F3 トグルで MainWindow から呼ばれる。
+        """
+        self._compact = compact
+        self._apply_responsive_columns()
+
+    def _apply_responsive_columns(self) -> None:
+        """テーブル幅に応じて列の表示を調整する (ファイル名を最優先)。
+
+        - compact (プレビュー展開時): EXT / 更新 / サイズ を全て隠す
+        - 通常時: Name 最低 120px を確保した上で 更新 列を 0〜110px で伸縮、
+          余地が 30px 未満なら更新列も隠す。EXT / サイズ は固定で維持。
+        """
+        if getattr(self, "_compact", False):
+            for col in (1, 2, 3):
+                self.table.setColumnHidden(col, True)
+            return
+        self.table.setColumnHidden(1, False)
+        self.table.setColumnHidden(3, False)
+        # ext(60) + size(90) + name_min(120) を引いた残りを 更新 列が使う
+        viewport_w = self.table.viewport().width()
+        date_avail = viewport_w - (60 + 90 + 120)
+        if date_avail < 30:
+            self.table.setColumnHidden(2, True)
+        else:
+            self.table.setColumnHidden(2, False)
+            self.table.setColumnWidth(2, min(date_avail, 110))
 
     def reload_sources(self, sources: list[InboxSource]) -> None:
         """設定変更時に監視先を差し替える (古い QFileSystemWatcher を破棄)。"""
@@ -220,9 +290,18 @@ class InboxPane(QWidget):
         for r, f in enumerate(files):
             ignored = str(f.path) in self._ignored
 
-            name_item = QTableWidgetItem(f.name)
+            # Name は stem のみ、拡張子は別列 (ドット付き大文字、例: .PDF .JPG)。
+            # Inbox は PDF + 画像 (jpg/png/tiff) 等の絞り込み済なので原則 ext は付く。
+            # Path.suffix は既に "." を含むため upper() のみ。点なしは "" のまま。
+            ext_upper = f.path.suffix.upper()
+            name_item = QTableWidgetItem(f.path.stem)
             # UserRole にパス文字列を埋め込む (ソートで行順が変わっても照合できる)
             name_item.setData(Qt.ItemDataRole.UserRole, str(f.path))
+
+            ext_item = QTableWidgetItem(ext_upper)
+            ext_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
 
             date_str = datetime.fromtimestamp(f.mtime).strftime("%Y-%m-%d")
             date_item = QTableWidgetItem(date_str)
@@ -230,25 +309,46 @@ class InboxPane(QWidget):
 
             size_item = _SizeCell(f.size, self._size_unit)
 
-            if ignored:  # 無視ファイル (表示モード時) は 3 列ともグレー
+            if ignored:  # 無視ファイル (表示モード時) は 4 列ともグレー
                 name_item.setForeground(_IGNORED_FG)
+                ext_item.setForeground(_IGNORED_FG)
                 date_item.setForeground(_IGNORED_FG)
                 size_item.setForeground(_IGNORED_FG)
 
             self.table.setItem(r, 0, name_item)
-            self.table.setItem(r, 1, date_item)
-            self.table.setItem(r, 2, size_item)
-            self.table.setRowHeight(r, 14)
+            self.table.setItem(r, 1, ext_item)
+            self.table.setItem(r, 2, date_item)
+            self.table.setItem(r, 3, size_item)
+            self.table.setRowHeight(r, 18)
         self.table.setSortingEnabled(True)
-        # 既定: 更新降順 (新着順)。ユーザーがヘッダー左クリックで他列に変更可。
-        self.table.sortItems(1, Qt.SortOrder.DescendingOrder)
+        # 初回 populate 時のみ既定 (更新降順 = 新着順) を採用。以降は
+        # ユーザーがヘッダー左クリックで設定した順序を保持する
+        # (KB/MB 切替や Inbox 再走査で勝手に既定に戻さない)。
+        if not getattr(self, "_sort_initialized", False):
+            self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+            self._sort_initialized = True
 
     def _show_file_menu(self, pos) -> None:
-        """Inbox ファイルの右クリックメニュー (無視 / 無視を解除)。"""
+        """Inbox ファイルの右クリックメニュー (無視/開く/コピー/Explorer)。"""
         f = self._row_file(self.table.indexAt(pos).row())
         if f is None:
             return
         menu = QMenu(self)
+        act_open = menu.addAction("既定アプリで開く")
+        act_open.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(f.path)))
+        )
+        act_reveal = menu.addAction("フォルダを開く (Explorer)")
+        act_reveal.triggered.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(f.path.parent))
+            )
+        )
+        act_copy = menu.addAction("フルパスをコピー")
+        act_copy.triggered.connect(
+            lambda: self._copy_to_clipboard(str(f.path))
+        )
+        menu.addSeparator()
         if str(f.path) in self._ignored:
             act = menu.addAction("無視を解除")
             act.triggered.connect(lambda: self._set_ignored(f, False))
@@ -257,11 +357,24 @@ class InboxPane(QWidget):
             act.triggered.connect(lambda: self._set_ignored(f, True))
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def _open_selected_with_default_app(self, *_args) -> None:
+        """Inbox ダブルクリック / Enter キー: 選択ファイルを OS 既定アプリで開く。
+        複数選択時は先頭のみ (誤って大量起動するのを避ける)。"""
+        f = self._row_file(self.table.currentRow())
+        if f is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(f.path)))
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        from PySide6.QtWidgets import QApplication
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(text)
+
     def _show_header_menu(self, pos) -> None:
         """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""
         hdr = self.table.horizontalHeader()
         col = hdr.logicalIndexAt(pos)
-        if col != 2:
+        if col != 3:    # 0=Name / 1=EXT / 2=更新 / 3=サイズ
             return
         menu = QMenu(self)
         act_kb = menu.addAction("KB で表示")
@@ -309,33 +422,50 @@ class InboxPane(QWidget):
         )
 
     def toggle_ignore_selected(self) -> bool:
-        """選択中ファイルの「無視」状態を切替 (中央コマンドストリップ ✕ ボタン用)。
-
-        選択がなければ何もしない。True/False は「実行できたか」。
-        """
-        f = self._row_file(self.table.currentRow())
-        if f is None:
+        """選択中ファイルの「無視」状態を切替 (multi-select 対応)。
+        基準は「現在 cell」の状態 — 無視中なら全選択を解除、そうでなければ全選択を無視に。
+        選択ゼロなら何もしない。True/False は「実行できたか」。"""
+        files = self.selected_files()
+        if not files:
             return False
-        self._set_ignored(f, str(f.path) not in self._ignored)
+        cur = self._row_file(self.table.currentRow())
+        base_path = str(cur.path) if cur is not None else str(files[0].path)
+        ignore = base_path not in self._ignored
+        for f in files:
+            self._set_ignored(f, ignore)
         return True
 
     def selected_file_name(self) -> str | None:
-        row = self.table.currentRow()
-        if row < 0:
+        """選択中ファイルの **フル名** (case_pane の右クリック投入メニュー表示用)。
+        複数選択時は `N ファイル` 形式で返す (具体名は省略)。"""
+        files = self.selected_files()
+        if not files:
             return None
-        item = self.table.item(row, 0)
-        return item.text() if item else None
+        if len(files) == 1:
+            return files[0].name
+        return f"{len(files)} ファイル"
 
     def selected_file(self) -> InboxFile | None:
         """選択中の Inbox ファイル (パス込み)。未選択 / 無視済なら None。"""
         return self._row_file(self.table.currentRow())
 
+    def selected_files(self) -> list[InboxFile]:
+        """選択中の Inbox ファイル全件 (multi-select 対応)。
+        Shift/Ctrl で複数選択された行を順序保ったまま返す。"""
+        rows = [
+            ix.row() for ix in self.table.selectionModel().selectedRows()
+        ]
+        out: list[InboxFile] = []
+        for r in sorted(set(rows)):
+            f = self._row_file(r)
+            if f is not None:
+                out.append(f)
+        return out
+
     def delete_selected(self) -> None:
-        """Del キー: 選択中の Inbox ファイルを削除要求。"""
-        f = self.selected_file()
-        if f is None:
-            return
-        self.deleteRequested.emit(str(f.path))
+        """Del キー: 選択中の Inbox ファイル群を削除要求 (multi-select 対応)。"""
+        for f in self.selected_files():
+            self.deleteRequested.emit(str(f.path))
 
     def select_path(self, path: Path) -> None:
         """指定パスの行を選択 (rename 直後の選択維持用)。"""

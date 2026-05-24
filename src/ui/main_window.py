@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMenuBar,
     QSizeGrip,
@@ -38,18 +39,27 @@ from src.ui.inbox_pane import InboxPane
 from src.ui.open_case_dialog import OpenCaseDialog
 from src.ui.preview_pane import PreviewPane
 from src.ui.rename_dialog import RenameDialog
-from src.ui.settings_dialog import SettingsDialog, load_inbox_sources
+from src.ui.settings_dialog import (
+    KEY_QUICK_NOTES,
+    KEY_QUICK_TEMP,
+    SettingsDialog,
+    load_inbox_sources,
+)
 from src.ui.title_bar import TitleBar
 
 # 動的レイアウト用の定数 — _apply_pane_layout の視覚均等計算に使う。
-# 中央ペイン側の「ファイル一覧より左の総幅」(サブフォルダボタン列 + 中央枠 ≈ 144px)
-_CASE_LEFT_OFFSET = 144
+# 中央ペイン側で「ファイル一覧より左外」に取られる総幅 (= CasePane Name 列幅と
+# Inbox Name 列幅を一致させるための補正)。内訳:
+#   3 (outer left margin) + 2 (border-left) + 140 (btn_container fixed) +
+#   2 (mid spacing) + 2 (border-right) + 3 (outer right margin) - 4 (Inbox 側の
+#   border-right 2 + 右margin 2 を差し引き) = 148
+_CASE_LEFT_OFFSET = 148
 
 
 class MainWindow(QMainWindow):
     def __init__(self, initial_paths: list[Path] | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("k-file")
+        self.setWindowTitle("K-FILE")
         self.resize(1400, 860)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         # フォルダを k-file ウインドウへ D&D で事件タブ追加 (HANDOVER §2)
@@ -63,6 +73,7 @@ class MainWindow(QMainWindow):
         self._initial_paths: list[Path] = list(initial_paths or [])
         self._build_layout()
         # _build_layout 完了後にセッション復元 + CLI 引数を順次オープン
+        self._restore_window_size()
         self._restore_session()
         self._open_initial_paths()
 
@@ -104,9 +115,10 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.inbox_pane)
         self.splitter.addWidget(center)
         self.splitter.addWidget(self.preview_pane)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 2)
-        self.splitter.setStretchFactor(2, 2)
+        # stretch factor は使わない: resizeEvent → _apply_pane_layout で
+        # ウインドウサイズに応じて毎回 setSizes を呼ぶ方式。stretch factor を
+        # 1:2:2 にしておくと、プレビュー非表示時にその 2/5 が中央に流れて
+        # Inbox/CasePane の Name 列幅が大きくずれる原因になる。
         self._apply_pane_layout()
         root_layout.addWidget(self.splitter, stretch=1)
 
@@ -136,6 +148,8 @@ class MainWindow(QMainWindow):
         )
         self.fn_bar.keyTriggered.connect(self._on_fn_key)
         root_layout.addWidget(self.fn_bar)
+        # F6 雑記録 / F7 一時保管 はパス設定状況で動的に enable/label を切替
+        self._refresh_quick_slots()
 
         self.setCentralWidget(root)
 
@@ -165,10 +179,38 @@ class MainWindow(QMainWindow):
         sc_toggle_preview = QShortcut(QKeySequence("F3"), self)
         sc_toggle_preview.activated.connect(self._toggle_preview)
 
+        # F6 / F7: クイック起動フォルダ (雑記録 / 一時保管) をタブで開く
+        sc_quick_notes = QShortcut(QKeySequence("F6"), self)
+        sc_quick_notes.activated.connect(lambda: self._open_quick_folder("notes"))
+        sc_quick_temp = QShortcut(QKeySequence("F7"), self)
+        sc_quick_temp.activated.connect(lambda: self._open_quick_folder("temp"))
+
         sb = QStatusBar()
         sb.setSizeGripEnabled(False)
+        # 右側に「選択中ファイルのフルパス」を 2 分割で常設表示。
+        # 左 = showMessage の通常スロット (準備完了 / 一時通知)、
+        # 右 = 選択行パス。複数選択時は <複数選択>。境界に Win95 風 sunken 縦線。
+        self.path_status_label = QLabel("")
+        self.path_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.path_status_label.setStyleSheet(
+            "border-left: 1px solid #808080; padding-left: 6px;"
+            " font-size: 9pt;"
+        )
+        # stretch=0 (= addPermanentWidget の既定): showMessage の通常スロットが
+        # 左を伸縮で確保し、path ラベルは内容に合わせた幅で右側に座る。これで
+        # 「移動しました」などのトーストメッセージと共存できる。
+        sb.addPermanentWidget(self.path_status_label)
         sb.addPermanentWidget(QSizeGrip(self))
         self.setStatusBar(sb)
+        # 両ペインの選択モデル変化で path 表示を更新
+        self.inbox_pane.table.selectionModel().selectionChanged.connect(
+            self._update_path_status
+        )
+        self.case_pane.table.selectionModel().selectionChanged.connect(
+            self._update_path_status
+        )
 
         # シグナル接続
         self.case_pane.subfolderBrowsed.connect(self._on_subfolder_browsed)
@@ -176,6 +218,9 @@ class MainWindow(QMainWindow):
             self._on_subfolder_inject_requested
         )
         # D&D: Inbox → サブフォルダボタン (rename ダイアログを挟まず即投入)
+        self.case_pane.inboxDropToFolderRequested.connect(
+            self._on_inbox_drop_to_folder
+        )
         self.case_pane.inboxDropInjectRequested.connect(
             self._on_inbox_drop_inject
         )
@@ -197,6 +242,7 @@ class MainWindow(QMainWindow):
             self._on_strip_return_to_desktop
         )
         self.command_strip.ignoreClicked.connect(self._on_strip_ignore)
+        self.command_strip.deleteClicked.connect(self._on_strip_delete)
         self.command_strip.undoClicked.connect(self._on_undo)
         # 事件タブ変更 / サブフォルダ構成変更でストリップの数字ボタンを再構築
         self.case_pane.subfoldersChanged.connect(self._sync_strip_targets)
@@ -216,12 +262,16 @@ class MainWindow(QMainWindow):
         # ファイル選択 → 右ペインでプレビュー
         self.inbox_pane.fileSelected.connect(self.preview_pane.show_file)
         self.case_pane.fileSelected.connect(self.preview_pane.show_file)
+        # Tab / Shift+Tab で Inbox ↔ 中央ファイル一覧の往復
+        self.inbox_pane.table.tabPressed.connect(self._focus_case_table)
+        self.case_pane.table.tabPressed.connect(self._focus_inbox_table)
+
 
     def _build_menus(self, mb: QMenuBar) -> None:
         # M1 で実動するのは「終了」「k-file について」のみ。
         # M2〜M5 で実装する項目は disabled (グレーアウト) で配置し、
         # 各マイルストーンで setEnabled(True) + slot 結線していく。
-        m_file = mb.addMenu("ファイル(&F)")
+        m_file = mb.addMenu("ﾌｧｲﾙ(&F)")
         act_open_case = QAction("事件を開く(&O)…", self)
         act_open_case.setShortcut(QKeySequence("Ctrl+O"))
         act_open_case.triggered.connect(self._on_open_case)
@@ -265,13 +315,13 @@ class MainWindow(QMainWindow):
 
         # ツールメニュー: 設定 (Inbox 監視パス・ksystemz.db パス等) の入口。
         # 将来「フォルダ整合チェック」「履歴の掃除」等もここへ集約する。
-        m_tools = mb.addMenu("ツール(&T)")
+        m_tools = mb.addMenu("ﾂｰﾙ(&T)")
         act_settings = QAction("設定(&S)…", self)
         act_settings.triggered.connect(self._on_settings)
         m_tools.addAction(act_settings)
 
-        m_help = mb.addMenu("ヘルプ(&H)")
-        act_about = QAction("k-file について(&A)", self)
+        m_help = mb.addMenu("ﾍﾙﾌﾟ(&H)")
+        act_about = QAction("K-FILE について(&A)", self)
         act_about.triggered.connect(self._on_about)
         m_help.addAction(act_about)
 
@@ -350,10 +400,21 @@ class MainWindow(QMainWindow):
             )
 
     def _on_strip_ignore(self) -> None:
-        """✕: Inbox 選択ファイルの「無視」を切替。"""
+        """無視: Inbox 選択ファイルの「無視」を切替 (実ファイルは触らない)。"""
         if not self.inbox_pane.toggle_ignore_selected():
             self.statusBar().showMessage(
                 "選択中の Inbox ファイルがありません", 3000
+            )
+
+    def _on_strip_delete(self) -> None:
+        """削除: 選択ファイルを OS ごみ箱へ (Inbox 優先 → 中央)。"""
+        if self.inbox_pane.selected_file() is not None:
+            self.inbox_pane.delete_selected()
+        elif self.case_pane.selected_entry() is not None:
+            self.case_pane.delete_selected_row()
+        else:
+            self.statusBar().showMessage(
+                "削除する行が選択されていません", 3000
             )
 
     def _on_fn_key(self, k: int) -> None:
@@ -364,11 +425,64 @@ class MainWindow(QMainWindow):
             self._toggle_preview()
         elif k == 5:
             self.inbox_pane.refresh()
+        elif k == 6:
+            self._open_quick_folder("notes")
+        elif k == 7:
+            self._open_quick_folder("temp")
         elif k == 8:
             # F8: 中央ペイン優先 (フォーカス問わず)。Inbox の削除は Del を推奨。
             self.case_pane.delete_selected_row()
         elif k == 12:
             self._show_history()
+
+    def _focus_inbox_table(self) -> None:
+        """Tab from case → Inbox に focus 移動 + 未選択なら先頭行を選択。"""
+        t = self.inbox_pane.table
+        t.setFocus()
+        if t.currentRow() < 0 and t.rowCount() > 0:
+            t.setCurrentCell(0, 0)
+
+    def _focus_case_table(self) -> None:
+        """Tab from Inbox → 中央テーブルに focus 移動 + 未選択なら先頭行を選択。"""
+        t = self.case_pane.table
+        t.setFocus()
+        if t.currentRow() < 0 and t.rowCount() > 0:
+            t.setCurrentCell(0, 0)
+
+    def _refresh_quick_slots(self) -> None:
+        """F6 / F7 セルのラベルと enabled 状態を設定値から再構築。"""
+        notes = (self.db.get_setting(KEY_QUICK_NOTES, "") or "").strip()
+        temp = (self.db.get_setting(KEY_QUICK_TEMP, "") or "").strip()
+        notes_ok = bool(notes) and Path(notes).is_dir()
+        temp_ok = bool(temp) and Path(temp).is_dir()
+        self.fn_bar.set_slot(
+            6, "雑記録", enabled=notes_ok,
+            tooltip=f"F6: 雑記録フォルダを開く\n{notes}" if notes_ok else
+            "F6: 雑記録 (ツール→設定で パス指定すると有効)",
+        )
+        self.fn_bar.set_slot(
+            7, "一時保管", enabled=temp_ok,
+            tooltip=f"F7: 一時保管フォルダを開く\n{temp}" if temp_ok else
+            "F7: 一時保管 (ツール→設定で パス指定すると有効)",
+        )
+
+    def _open_quick_folder(self, kind: str) -> None:
+        """F6/F7: 雑記録 or 一時保管 を case_pane のタブとして開く。"""
+        key = KEY_QUICK_NOTES if kind == "notes" else KEY_QUICK_TEMP
+        label = "雑記録" if kind == "notes" else "一時保管"
+        path_str = (self.db.get_setting(key, "") or "").strip()
+        if not path_str:
+            self.statusBar().showMessage(
+                f"{label} のパスが未設定です (ツール→設定…)", 4000
+            )
+            return
+        path = Path(path_str)
+        if not path.is_dir():
+            self.statusBar().showMessage(
+                f"{label} のフォルダが見つかりません: {path}", 5000
+            )
+            return
+        self.case_pane.add_case_tab(path)
 
     def _case_repo(self) -> CaseRepo | None:
         """ksystemz.db への RO 接続を遅延作成 (Ctrl+O / セッション復元 等で使う)。
@@ -526,6 +640,8 @@ class MainWindow(QMainWindow):
         self.inbox_pane.reload_sources(dlg.applied_sources())
         # ksystemz.db のキャッシュを破棄 (次回 Ctrl+O で新パスを再オープン)
         self._repo_cache = None
+        # F6/F7 クイック起動セルも再構築 (パス変更/追加を反映)
+        self._refresh_quick_slots()
         self.statusBar().showMessage("設定を保存しました", 4000)
 
     def _on_open_case(self) -> None:
@@ -572,6 +688,43 @@ class MainWindow(QMainWindow):
         self._preview_visible = not self._preview_visible
         self._apply_pane_layout()
 
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # ウインドウサイズ変化のたびに「Inbox 幅 ≒ 中央ファイル一覧幅」を再計算。
+        # 注: この時点ではまだ splitter のサイズは古い (Qt のレイアウトパスが
+        # この後に走る) ため、QTimer.singleShot(0) で 1tick 遅らせて
+        # レイアウト確定後に呼ぶ。
+        if hasattr(self, "splitter"):
+            QTimer.singleShot(0, self._apply_pane_layout)
+
+    def closeEvent(self, e) -> None:
+        """終了時に現在のウインドウサイズを kfile.db に保存 (次回起動で復元)。"""
+        if hasattr(self, "db"):
+            try:
+                self.db.set_setting("window_width", str(self.width()))
+                self.db.set_setting("window_height", str(self.height()))
+                self.db.set_setting(
+                    "window_maximized", "1" if self.isMaximized() else "0"
+                )
+            except Exception:
+                pass    # 保存失敗は致命的でない (次回 既定サイズで起動)
+        super().closeEvent(e)
+
+    def _restore_window_size(self) -> None:
+        """前回保存したウインドウサイズを復元 (なければ既定 1400x860 のまま)。"""
+        w_str = self.db.get_setting("window_width", "") or ""
+        h_str = self.db.get_setting("window_height", "") or ""
+        maxed = (self.db.get_setting("window_maximized", "0") or "0") == "1"
+        try:
+            if w_str and h_str:
+                w, h = int(w_str), int(h_str)
+                if 400 <= w <= 10000 and 300 <= h <= 10000:
+                    self.resize(w, h)
+        except ValueError:
+            pass
+        if maxed:
+            self.showMaximized()
+
     def _apply_pane_layout(self) -> None:
         """プレビュー有無に応じてスプリッタを動的計算で再配置。
 
@@ -586,13 +739,21 @@ class MainWindow(QMainWindow):
         if self._preview_visible:
             self.preview_pane.setVisible(True)
             usable = total - handle * 2
-            unit = max(usable // 5, 0)
-            self.splitter.setSizes([unit, unit * 2, usable - 3 * unit])
+            # 3 カラム時も「Inbox 幅 ≒ 中央ファイル一覧幅」を維持。
+            # offset = strip + _CASE_LEFT_OFFSET。center = inbox + offset。
+            # preview は残り (結果 2*inbox の幅になり、概ね 1:1:2 に近い割り付け)。
+            offset = strip + _CASE_LEFT_OFFSET
+            inbox = max((usable - offset) // 4, 100)
+            center_w = inbox + offset
+            self.splitter.setSizes([inbox, center_w, usable - inbox - center_w])
         else:
             self.preview_pane.setVisible(False)
             usable = total - handle
             inbox = max((usable - strip - _CASE_LEFT_OFFSET) // 2, 100)
             self.splitter.setSizes([inbox, usable - inbox, 0])
+        # プレビュー表示時は左右ペインが狭くなるので Name 列のみに絞る
+        self.inbox_pane.set_compact(self._preview_visible)
+        self.case_pane.set_compact(self._preview_visible)
 
     def _on_about(self) -> None:
         AboutDialog(self).exec()
@@ -600,6 +761,37 @@ class MainWindow(QMainWindow):
     def _on_inbox_changed(self, count: int) -> None:
         self._inbox_count = count
         self._update_idle_status()
+
+    def _update_path_status(self, *_args) -> None:
+        """ステータスバー右側の「選択ファイルのフルパス」表示を更新する。
+
+        signal の sender でどちらのペインで操作があったかを判定し、そのペインの
+        選択を表示する。同ペインで複数行選択時は <複数選択>。未選択なら空。
+        (Inbox / 中央のテーブルはどちらも SingleSelection だが、将来 multi 化
+        した場合に対応できるよう selectedRows で件数を見る)
+        """
+        sender = self.sender()
+        if sender is self.inbox_pane.table.selectionModel():
+            rows = sender.selectedRows()
+            if len(rows) > 1:
+                text = "<複数選択>"
+            elif rows:
+                f = self.inbox_pane.selected_file()
+                text = str(f.path) if f is not None else ""
+            else:
+                text = ""
+            self.path_status_label.setText(text)
+            return
+        if sender is self.case_pane.table.selectionModel():
+            rows = sender.selectedRows()
+            if len(rows) > 1:
+                text = "<複数選択>"
+            elif rows:
+                entry = self.case_pane.selected_entry()
+                text = str(entry[0]) if entry is not None else ""
+            else:
+                text = ""
+            self.path_status_label.setText(text)
 
     def _update_idle_status(self) -> None:
         n = self.db.undoable_count() if hasattr(self, "db") else 0
@@ -644,14 +836,69 @@ class MainWindow(QMainWindow):
         code, _ = self.case_pane.current_case()
         self.statusBar().showMessage(f"{code} / {folder_name} を表示", 2000)
 
-    def _on_subfolder_inject_requested(self, view_id: int, folder_name: str) -> None:
-        """Alt+0〜9 / 右クリック / ストリップ数字ボタン: Inbox 選択ファイルを即投入。
+    def _batch_inject(
+        self,
+        srcs: list[Path],
+        target_dir: Path,
+        category: str,
+        suffix: str = "",
+    ) -> None:
+        """N ファイルを target_dir に順次 inject。各 ok 件で history 記録 +
+        ステータスメッセージを集計して 1 行で報告 (UX 簡潔化)。"""
+        if not srcs:
+            return
+        code, _ = self.case_pane.current_case()
+        ok_n = 0
+        collided_n = 0
+        fails: list[str] = []
+        last_name = ""
+        for src in srcs:
+            result = file_ops.inject(src, target_dir)
+            if not result.ok:
+                fails.append(f"{src.name}: {result.error}")
+                continue
+            ok_n += 1
+            last_name = result.renamed_to or src.name
+            if result.collided:
+                collided_n += 1
+            self._record_history(
+                action="inject",
+                src_path=str(result.src),
+                dst_path=str(result.dst) if result.dst else None,
+                case_code=code,
+                category=category,
+                renamed_to=result.renamed_to,
+                original_name=result.original_name,
+            )
+        self.inbox_pane.refresh()
+        self.case_pane.refresh_current_view()
 
-        rename ダイアログは出さない (移動は素早く実行が原則 — rename したい時は
-        F2 で別途行う)。衝突時は自動連番。成功時は drop_history 記録 + 再描画。
-        """
-        f = self.inbox_pane.selected_file()
-        if f is None:
+        if ok_n == 1 and not fails:
+            collide = "  衝突を回避" if collided_n else ""
+            self.statusBar().showMessage(
+                f"{last_name} → {code} / {category}{collide} に投入{suffix}",
+                4000,
+            )
+        elif ok_n >= 1:
+            msg = f"{ok_n} ファイルを {code} / {category} に投入{suffix}"
+            if collided_n:
+                msg += f" (衝突回避 {collided_n} 件)"
+            if fails:
+                msg += f" / 失敗 {len(fails)} 件"
+            self.statusBar().showMessage(msg, 5000)
+        else:
+            self.statusBar().showMessage(
+                f"投入失敗: {'; '.join(fails[:2])}", 6000
+            )
+
+    def _on_subfolder_inject_requested(
+        self, view_id: int, folder_name: str
+    ) -> None:
+        """Alt+0〜9 / 右クリック / ストリップ数字ボタン: Inbox 選択ファイルを
+        全件即投入 (multi-select 対応)。rename ダイアログは出さない (素早く
+        実行が原則 — rename したい時は F2 で別途行う)。衝突時は自動連番。"""
+        files = self.inbox_pane.selected_files()
+        if not files:
             self.statusBar().showMessage(
                 "投入する Inbox ファイルが未選択です", 3000
             )
@@ -662,91 +909,48 @@ class MainWindow(QMainWindow):
                 f"投入先が見つかりません: {folder_name}", 3000
             )
             return
-        code, _ = self.case_pane.current_case()
-
-        result = file_ops.inject(f.path, target_dir)
-        if not result.ok:
-            self.statusBar().showMessage(f"投入失敗: {result.error}", 6000)
-            return
-
-        self._record_history(
-            action="inject",
-            src_path=str(result.src),
-            dst_path=str(result.dst) if result.dst else None,
-            case_code=code,
-            category=folder_name,
-            renamed_to=result.renamed_to,
-            original_name=result.original_name,
-        )
-        self.inbox_pane.refresh()
-        self.case_pane.refresh_current_view()
-
-        if result.collided:
-            self.statusBar().showMessage(
-                f"{result.original_name} → {code} / {folder_name} "
-                f"(衝突を回避して {result.renamed_to} で投入)", 5000,
-            )
-        else:
-            self.statusBar().showMessage(
-                f"{result.renamed_to} → {code} / {folder_name} に投入", 4000,
-            )
+        self._batch_inject([f.path for f in files], target_dir, folder_name)
 
     def _on_inbox_drop_inject(
-        self, view_id: int, folder_name: str, src_path: str
+        self, view_id: int, folder_name: str, src_paths: list[str]
     ) -> None:
-        """Inbox ファイルをサブフォルダボタンに D&D 投入 (rename ダイアログなし)。
-
-        マウス操作の俊敏さを優先し、元名のまま投入。衝突時は自動連番。
-        rename したい時は Alt+0〜9 または右クリックメニュー経由を使う。
-        """
+        """Inbox ファイル群をサブフォルダボタンに D&D 投入 (rename なし即時)。"""
         target_dir = self.case_pane.view_target_dir(view_id)
         if target_dir is None:
             self.statusBar().showMessage(
                 f"投入先が見つかりません: {folder_name}", 3000
             )
             return
-        src = Path(src_path)
-        result = file_ops.inject(src, target_dir)
-        if not result.ok:
-            self.statusBar().showMessage(f"投入失敗: {result.error}", 6000)
-            return
-
-        code, _ = self.case_pane.current_case()
-        self._record_history(
-            action="inject",
-            src_path=str(result.src),
-            dst_path=str(result.dst) if result.dst else None,
-            case_code=code,
-            category=folder_name,
-            renamed_to=result.renamed_to,
-            original_name=result.original_name,
+        self._batch_inject(
+            [Path(p) for p in src_paths], target_dir, folder_name,
+            suffix=" (D&D)",
         )
-        self.inbox_pane.refresh()
-        self.case_pane.refresh_current_view()
 
-        if result.collided:
-            self.statusBar().showMessage(
-                f"{result.original_name} → {code} / {folder_name} "
-                f"(衝突を回避して {result.renamed_to} で投入)", 5000,
+    def _on_inbox_drop_to_folder(
+        self, target_dir: str, src_paths: list[str]
+    ) -> None:
+        """Inbox ファイル群をファイル一覧内の任意フォルダ (孫含む) に D&D 投入。"""
+        target = Path(target_dir)
+        # category 表示用に「親サブフォルダ/孫フォルダ」のような相対パス
+        case_root = self.case_pane.current_case_path()
+        try:
+            rel = (
+                str(target.relative_to(case_root)) if case_root else target.name
             )
-        else:
-            self.statusBar().showMessage(
-                f"{result.renamed_to} → {code} / {folder_name} に投入 (D&D)", 4000,
-            )
+        except ValueError:
+            rel = target.name
+        self._batch_inject(
+            [Path(p) for p in src_paths], target, rel, suffix=" (D&D)",
+        )
 
-    def _on_case_tab_drop_move(self, target_idx: int, src_path: str) -> None:
-        """事件タブへの D&D = クロス事件 Move。
+    def _on_case_tab_drop_move(
+        self, target_idx: int, src_paths: list[str]
+    ) -> None:
+        """事件タブへの D&D = クロス事件 Move (multi-select 対応)。
 
-        移動先は target 事件の **同名サブフォルダ** (例: 元が 3_受信 なら target
-        の 3_受信)。なければ target 事件フォルダ直下に移す。衝突時は自動連番。
+        各 src ごとに同名サブフォルダ (例: 元が 3_受信 なら target の 3_受信)
+        にマップ。なければ target 事件フォルダ直下に移す。衝突時は自動連番。
         """
-        src = Path(src_path)
-        if not src.exists():
-            self.statusBar().showMessage(
-                "移動元が見つかりません (ファイルが既に動いた可能性)", 4000
-            )
-            return
-        # target 事件の root path を引く
         case_paths = self.case_pane._case_paths
         if not 0 <= target_idx < len(case_paths):
             return
@@ -756,46 +960,67 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("同じ事件タブには移動できません", 3000)
             return
 
-        # 同名サブフォルダにマップ (`src_case_root/3_受信/foo.pdf`
-        # → `target_case_root/3_受信/foo.pdf`、なければ target_case_root へ)
-        target_dir = target_case_root
-        if src_case_root is not None:
-            try:
-                rel_parts = src.parent.relative_to(src_case_root).parts
-            except ValueError:
-                rel_parts = ()
-            if rel_parts:
-                candidate = target_case_root / rel_parts[0]
-                if candidate.is_dir():
-                    target_dir = candidate
-
-        result = file_ops.move(src, target_dir)
-        if not result.ok:
-            self.statusBar().showMessage(f"移動失敗: {result.error}", 6000)
-            return
-
         target_code, _ = _parse_case(target_case_root)
-        category = target_dir.name if target_dir != target_case_root else "(直下)"
-        self._record_history(
-            action="move",
-            src_path=str(result.src),
-            dst_path=str(result.dst) if result.dst else None,
-            case_code=target_code,
-            category=category,
-            renamed_to=result.renamed_to,
-            original_name=result.original_name,
-        )
-        # 移動元タブの中身を更新 (現在表示中なら反映)
+        ok_n = 0
+        collided_n = 0
+        fails: list[str] = []
+        last_label = ""
+        last_category = ""
+        for src_str in src_paths:
+            src = Path(src_str)
+            if not src.exists():
+                fails.append(f"{src.name}: 既に移動済")
+                continue
+            # 同名サブフォルダにマップ (各 src ごとに別フォルダ可)
+            target_dir = target_case_root
+            if src_case_root is not None:
+                try:
+                    rel_parts = src.parent.relative_to(src_case_root).parts
+                except ValueError:
+                    rel_parts = ()
+                if rel_parts:
+                    candidate = target_case_root / rel_parts[0]
+                    if candidate.is_dir():
+                        target_dir = candidate
+            category = (
+                target_dir.name if target_dir != target_case_root else "(直下)"
+            )
+            result = file_ops.move(src, target_dir)
+            if not result.ok:
+                fails.append(f"{src.name}: {result.error}")
+                continue
+            ok_n += 1
+            last_label = result.renamed_to or src.name
+            last_category = category
+            if result.collided:
+                collided_n += 1
+            self._record_history(
+                action="move",
+                src_path=str(result.src),
+                dst_path=str(result.dst) if result.dst else None,
+                case_code=target_code,
+                category=category,
+                renamed_to=result.renamed_to,
+                original_name=result.original_name,
+            )
         self.case_pane.refresh_current_view()
 
-        if result.collided:
+        if ok_n == 1 and not fails:
+            collide = "  衝突を回避" if collided_n else ""
             self.statusBar().showMessage(
-                f"{result.original_name} → {target_code} / {category} "
-                f"(衝突を回避して {result.renamed_to}) を移動", 5000,
+                f"{last_label} → {target_code} / {last_category}{collide} に移動",
+                4000,
             )
+        elif ok_n >= 1:
+            msg = f"{ok_n} ファイルを {target_code} に移動"
+            if collided_n:
+                msg += f" (衝突回避 {collided_n} 件)"
+            if fails:
+                msg += f" / 失敗 {len(fails)} 件"
+            self.statusBar().showMessage(msg, 5000)
         else:
             self.statusBar().showMessage(
-                f"{result.renamed_to} → {target_code} / {category} に移動", 4000,
+                f"移動失敗: {'; '.join(fails[:2])}", 6000
             )
 
     def _on_rename_in_case(self) -> None:

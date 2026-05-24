@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from src.core.undo_ops import undo_action
 from src.infra.kfile_db import KFileDB
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
 # action コード → 日本語ラベル (横に並べた時に視覚的に区別しやすい)
@@ -48,13 +49,14 @@ class HistoryDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
+        # 9pt ダイアログサイズ (履歴テーブルの列幅で余裕を持たせる)
         self.resize(820, 460)
 
         self._db = db
         self._undone_any = False   # MainWindow が後で refresh するかの判定用
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(2, 2, 2, 2)   # raised 外縁 2px と重ならないため
         outer.setSpacing(0)
 
         title = TitleBar(self, minimal=True)
@@ -100,6 +102,8 @@ class HistoryDialog(QDialog):
         outer.addLayout(body)
 
         self._reload()
+        # 本体と同じ MS Gothic ビットマップ戦略を適用
+        apply_bitmap_font_strategy(self, point_size=9)
 
     def _reload(self) -> None:
         """drop_history を引いて表に並べ直す (個別 Undo 後の再描画にも使う)。"""

@@ -19,13 +19,14 @@ from PySide6.QtWidgets import QFrame, QPushButton, QVBoxLayout, QWidget
 class CommandStrip(QWidget):
     """Inbox と参照フォルダの間に挟む細い縦バー。"""
 
-    STRIP_WIDTH = 28  # ペイン外から見える視覚幅 (動的レイアウト計算で参照)
+    STRIP_WIDTH = 52  # ペイン外から見える視覚幅 (動的レイアウト計算で参照)
 
     # 数字ボタン (1..9, 0) クリック → view_id を載せて通知
     subfolderClicked = Signal(int)
     # << ボタン: 中央ペイン選択ファイルを実デスクトップへ戻す (一時保留)
     returnToDesktopClicked = Signal()
     ignoreClicked = Signal()
+    deleteClicked = Signal()
     undoClicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -64,13 +65,22 @@ class CommandStrip(QWidget):
         self._sep2.setFixedHeight(4)
         self._lay.addWidget(self._sep2)
 
-        # ユーティリティ: ✕ 無視 / ↶ Undo (常設)
+        # ユーティリティ: 無視 / 削除 / Undo (常設)
+        # "無視" は表示除外のみ (実ファイルは触らない)、"削除" は OS ごみ箱送り。
+        # 当初は "✕" 1 個だったが削除と誤認しやすいため文字ラベルに統一 + 分離。
         self.btn_ignore = self._make_btn(
-            "✕",
+            "無視",
             "Inbox 選択ファイルを表示から除外 / 解除 (実ファイルは触らない)",
         )
         self.btn_ignore.clicked.connect(self.ignoreClicked.emit)
         self._lay.addWidget(self.btn_ignore)
+
+        self.btn_delete = self._make_btn(
+            "削除",
+            "選択ファイルを OS ごみ箱へ送る (Del キー相当。Inbox / 中央のどちらか)",
+        )
+        self.btn_delete.clicked.connect(self.deleteClicked.emit)
+        self._lay.addWidget(self.btn_delete)
 
         self.btn_undo = self._make_btn("↶", "Undo (M4 で実装予定)")
         self.btn_undo.setEnabled(False)

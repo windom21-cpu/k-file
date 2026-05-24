@@ -25,7 +25,8 @@ class TitleBar(QWidget):
         """minimal=True でダイアログ用 (最小化/最大化を出さず × ボタンのみ)。"""
         super().__init__(parent)
         self.setObjectName("titleBar")
-        self.setFixedHeight(14)
+        # メニューバーと高さを揃える (22px)。中身のボタンは QSS 側で 18px。
+        self.setFixedHeight(22)
         self._minimal = minimal
         # QSS background-color を素の QWidget に効かせるため
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -48,7 +49,7 @@ class TitleBar(QWidget):
                 self.icon_label.setPixmap(pm)
         layout.addWidget(self.icon_label)
 
-        self.title_label = QLabel("k-file — 案件ドキュメント作業台")
+        self.title_label = QLabel("K-FILE")
         self.title_label.setObjectName("titleBarText")
         layout.addWidget(self.title_label, stretch=1)
 

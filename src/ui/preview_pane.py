@@ -9,6 +9,7 @@ QStackedWidget で [メッセージ / PDF / 画像] を切り替える。
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, Qt
@@ -67,6 +68,23 @@ class PreviewPane(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(PaneHeader("プレビュー"))
+
+        # 現在見ているファイルの情報を 1 行で常時表示 (業務で「これ何だっけ」防止)
+        self._info_label = QLabel("")
+        self._info_label.setObjectName("previewInfo")
+        self._info_label.setStyleSheet(
+            "QLabel#previewInfo {"
+            "  background-color: #FFFFFF;"
+            "  border-top: 1px solid #808080;"
+            "  border-left: 1px solid #808080;"
+            "  border-right: 1px solid #FFFFFF;"
+            "  border-bottom: 1px solid #FFFFFF;"
+            "  padding: 0 4px;"
+            "  min-height: 22px;"
+            "  font-size: 12pt;"
+            "}"
+        )
+        outer.addWidget(self._info_label)
 
         self._stack = QStackedWidget()
 
@@ -135,10 +153,12 @@ class PreviewPane(QWidget):
     def show_file(self, path: str) -> None:
         """選択されたファイルをプレビュー表示する。空文字なら未選択表示。"""
         if not path:
+            self._info_label.setText("")
             self._show_message("ファイルを選択するとプレビュー表示")
             return
         p = Path(path)
         if not p.is_file():
+            self._info_label.setText("")
             self._show_message("ファイルが見つかりません")
             return
         ext = p.suffix.lower()
@@ -147,21 +167,48 @@ class PreviewPane(QWidget):
         elif ext in _IMAGE_EXTS:
             self._show_image(p)
         else:
+            self._update_info(p, extra="")
             self._show_message(f"プレビュー対象外のファイル\n({ext})")
+
+    def _update_info(self, p: Path, extra: str = "") -> None:
+        """上部固定ヘッダーをファイル情報で更新。
+        extra に PDF ページ数等の追加情報を渡せる。"""
+        try:
+            st = p.stat()
+            size_kb = st.st_size // 1024
+            size_text = (
+                f"{size_kb}KB" if size_kb < 1024
+                else f"{st.st_size / (1024 * 1024):.1f}MB"
+            )
+            mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+            parts = [p.name, size_text, mtime]
+            if extra:
+                parts.append(extra)
+            self._info_label.setText("/".join(parts))
+            self._info_label.setToolTip(str(p))
+        except OSError:
+            self._info_label.setText(p.name)
+            self._info_label.setToolTip(str(p))
 
     def _show_pdf(self, p: Path) -> None:
         self._pdf_doc.load(str(p))
         if self._pdf_doc.status() == QPdfDocument.Status.Ready:
+            total = self._pdf_doc.pageCount()
+            self._update_info(p, extra=f"{total} ページ" if total > 0 else "")
             self._update_page_bar()
             self._stack.setCurrentWidget(self._pdf_container)
         else:
+            self._update_info(p, extra="読込失敗")
             self._show_message(f"PDF を読み込めません\n{p.name}")
 
     def _show_image(self, p: Path) -> None:
         pm = QPixmap(str(p))
         if pm.isNull():
+            self._update_info(p, extra="読込失敗")
             self._show_message(f"画像を読み込めません\n{p.name}")
             return
+        extra = f"{pm.width()}×{pm.height()}px"
+        self._update_info(p, extra=extra)
         self._image_view.set_image(pm)
         self._stack.setCurrentWidget(self._image_view)
 

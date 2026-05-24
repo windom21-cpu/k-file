@@ -31,12 +31,16 @@ from PySide6.QtWidgets import (
 
 from src.core.inbox_watcher import InboxSource
 from src.infra.kfile_db import KFileDB
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
 
 # settings table のキー名 (永続化に使う)
 KEY_INBOX_SOURCES = "inbox_sources_json"
 KEY_KSYSTEMZ_DB = "ksystemz_db_path"
+# クイック起動フォルダ (F6 / F7 で 1 発オープン、設定未指定なら disabled)
+KEY_QUICK_NOTES = "quick_notes_path"   # F6 = 雑記録
+KEY_QUICK_TEMP = "quick_temp_path"     # F7 = 一時保管
 
 
 def load_inbox_sources(db: KFileDB) -> list[InboxSource] | None:
@@ -80,13 +84,15 @@ class SettingsDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
-        self.resize(620, 460)
+        # 9pt ダイアログサイズ。Inbox 監視先テーブルが既定 4 件 + α 追加可能で
+        # スクロール無しで見える程度の高さを確保 (クイック起動 2 行/各種パス含む)
+        self.resize(620, 700)
 
         self._db = db
         self._sources: list[InboxSource] = list(current_sources)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(2, 2, 2, 2)   # raised 外縁 2px と重ならないため
         outer.setSpacing(0)
 
         title = TitleBar(self, minimal=True)
@@ -119,6 +125,9 @@ class SettingsDialog(QDialog):
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self._src_table.setColumnWidth(0, 90)
         self._src_table.setColumnWidth(2, 90)
+        # 既定 4 件 + 数件の追加余地までスクロール無しで見える高さを保証
+        # (ヘッダー 22 + 6 行 × 18 + ボーダー余裕 = ~140px)
+        self._src_table.setMinimumHeight(160)
         body.addWidget(self._src_table, stretch=1)
 
         src_btn_row = QHBoxLayout()
@@ -149,6 +158,34 @@ class SettingsDialog(QDialog):
 
         body.addWidget(self._sep())
 
+        # ── クイック起動フォルダ (F6 / F7) ──
+        body.addWidget(self._h2("クイック起動フォルダ (F6 / F7 で 1 発オープン)"))
+        body.addWidget(QLabel(
+            "事件外で常用するフォルダ。設定済なら下端ファンクションキーバーから\n"
+            "F6 / F7 でタブとして開ける (未設定セルはグレーアウト)。"
+        ))
+        qn_row = QHBoxLayout()
+        qn_row.addWidget(QLabel("F6  雑記録:"))
+        self._qn_edit = QLineEdit(db.get_setting(KEY_QUICK_NOTES, "") or "")
+        self._qn_edit.setPlaceholderText("(未設定)")
+        qn_row.addWidget(self._qn_edit, stretch=1)
+        qn_browse = QPushButton("参照...")
+        qn_browse.clicked.connect(lambda: self._on_browse_quick(self._qn_edit))
+        qn_row.addWidget(qn_browse)
+        body.addLayout(qn_row)
+
+        qt_row = QHBoxLayout()
+        qt_row.addWidget(QLabel("F7  一時保管:"))
+        self._qt_edit = QLineEdit(db.get_setting(KEY_QUICK_TEMP, "") or "")
+        self._qt_edit.setPlaceholderText("(未設定)")
+        qt_row.addWidget(self._qt_edit, stretch=1)
+        qt_browse = QPushButton("参照...")
+        qt_browse.clicked.connect(lambda: self._on_browse_quick(self._qt_edit))
+        qt_row.addWidget(qt_browse)
+        body.addLayout(qt_row)
+
+        body.addWidget(self._sep())
+
         # ── kfile.db の場所 (情報表示) ──
         from src.infra.kfile_db import default_db_path
         body.addWidget(self._h2("kfile.db の場所 (情報のみ・変更不可)"))
@@ -174,6 +211,9 @@ class SettingsDialog(QDialog):
         esc.activated.connect(self.reject)
 
         self._populate_sources_table()
+        # 本体と同じ MS Gothic ビットマップ戦略を適用 (新規ダイアログは
+        # 別 widget tree なので main.py の初期適用範囲外)
+        apply_bitmap_font_strategy(self, point_size=9)
 
     # ───────── helpers ─────────
 
@@ -259,6 +299,12 @@ class SettingsDialog(QDialog):
         if path:
             self._src_table.setItem(r, 1, QTableWidgetItem(path))
 
+    def _on_browse_quick(self, edit: QLineEdit) -> None:
+        start = edit.text() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "フォルダを選択", start)
+        if path:
+            edit.setText(path)
+
     def _on_browse_ksystemz(self) -> None:
         start = self._ks_edit.text() or str(Path.home())
         path, _ = QFileDialog.getOpenFileName(
@@ -275,6 +321,8 @@ class SettingsDialog(QDialog):
         new_sources = self._collect_sources_from_table()
         save_inbox_sources(self._db, new_sources)
         self._db.set_setting(KEY_KSYSTEMZ_DB, self._ks_edit.text().strip())
+        self._db.set_setting(KEY_QUICK_NOTES, self._qn_edit.text().strip())
+        self._db.set_setting(KEY_QUICK_TEMP, self._qt_edit.text().strip())
         self._sources = new_sources
         self.accept()
 

@@ -20,7 +20,9 @@ class FunctionKeysBar(QWidget):
         self.setObjectName("fnKeysBar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(2, 1, 2, 1)
+        # 上に 5px の余白: 中央ペインの「− 削除」ボタンと密着するのを避け、
+        # 「下端の操作領域」として視覚的に分離する。下は 1px のまま。
+        lay.setContentsMargins(2, 5, 2, 1)
         lay.setSpacing(1)
         self._cells: list[QPushButton] = []
         for i in range(1, 13):

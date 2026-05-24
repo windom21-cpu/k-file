@@ -45,13 +45,13 @@ class OpenCaseDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
-        self.resize(620, 420)
+        self.resize(640, 420)   # 9pt サイズ (事件名/依頼者名で見やすい幅)
 
         self._repo = repo
         self._selected: CaseRecord | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(2, 2, 2, 2)   # raised 外縁 2px と重ならないため
         outer.setSpacing(0)
 
         title = TitleBar(self, minimal=True)
@@ -122,6 +122,8 @@ class OpenCaseDialog(QDialog):
         # 検索ボックスに初期フォーカス
         self._search.setFocus()
         self._reload()
+        # 本体と同じ MS Gothic ビットマップ戦略を適用
+        apply_bitmap_font_strategy(self, point_size=9)
 
     def _reload(self) -> None:
         """検索条件を再評価してテーブルを書き換える。"""

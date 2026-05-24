@@ -15,9 +15,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QFont, QIcon
+from PySide6.QtWidgets import QApplication, QToolTip
 
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.main_window import MainWindow
 
 
@@ -70,11 +71,20 @@ def main() -> int:
     app.setOrganizationName("k-file")
     app.setStyle("Windows")  # Fusion / windowsvista を避けて Win95 寄りに固定
     app.setStyleSheet(_load_stylesheet())
+    # ツールチップは top-level の別 widget で `*` 継承外。同じ MS Gothic
+    # ビットマップ戦略で揃える (色/枠は QSS の QToolTip ルールで設定)。
+    tooltip_font = QFont("MS Gothic", 12)
+    tooltip_font.setStyleStrategy(
+        QFont.StyleStrategy.PreferBitmap
+        | QFont.StyleStrategy.NoAntialias
+    )
+    QToolTip.setFont(tooltip_font)
     app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
     initial_paths = parse_initial_paths(sys.argv)
     window = MainWindow(initial_paths=initial_paths)
     window.show()
+    apply_bitmap_font_strategy(window)
     return app.exec()
 
 

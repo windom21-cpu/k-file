@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.file_ops import validate_name
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
 
@@ -50,7 +51,8 @@ class RenameDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
-        self.setMinimumWidth(380)
+        # 9pt ダイアログ幅 (ファイル名が見える程度)
+        self.setMinimumWidth(420)
 
         self._original = original_name
         self._mode = mode
@@ -59,7 +61,7 @@ class RenameDialog(QDialog):
         self._combo: QComboBox
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(2, 2, 2, 2)   # raised 外縁 2px と重ならないため
         outer.setSpacing(0)
 
         title = "ファイルを投入" if mode == "inject" else "名前の変更"
@@ -77,6 +79,7 @@ class RenameDialog(QDialog):
 
         body.addWidget(QLabel("新しい名前:"))
         self._combo = QComboBox()
+        self._combo.setObjectName("renameInput")
         self._combo.setEditable(True)
         # 候補: original を先頭、その後重複除去で最近使った順
         items = [original_name]
@@ -119,6 +122,9 @@ class RenameDialog(QDialog):
             esc.activated.connect(self._accept_as_original)
         else:
             esc.activated.connect(self.reject)
+
+        # 本体と同じ MS Gothic ビットマップ戦略を適用
+        apply_bitmap_font_strategy(self, point_size=9)
 
     def _on_accept(self) -> None:
         """OK / Enter: 現在の入力テキストを検証して確定。"""

@@ -20,7 +20,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QDrag, QKeySequence, QShortcut
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStyle,
     QTabBar,
     QTableWidget,
@@ -55,6 +57,7 @@ from src.ui.dnd import (
     SRC_INBOX,
     kfile_local_paths,
     kfile_source_of,
+    make_drag_pixmap,
     make_kfile_mime_data,
 )
 from src.ui.pane_header import PaneHeader
@@ -88,23 +91,26 @@ def _parse_case(path: Path) -> tuple[str, str]:
 class _NameItem(QTableWidgetItem):
     """Name 列セル: フォルダを先頭にまとめ、各々名前順でソートする。
 
+    表示文字列は拡張子を除いた stem (拡張子は別列に分離)。
     行がフォルダかどうか・実パスを保持し、ダブルクリック時の判定に使う。
     `..` 行 (is_parent=True) はフォルダの中でも別格で常に最先頭。
     """
 
     def __init__(
         self,
-        name: str,
+        name: str,                  # 表示文字列 (file=stem / folder=フォルダ名)
         is_dir: bool,
         path: Path,
         is_parent: bool = False,
         is_link: bool = False,
+        ext: str = "",              # ソート時の補助キー (大文字、ドットなし)
     ) -> None:
         super().__init__(name)
         self.is_dir = is_dir
         self.path = path
         self.is_parent = is_parent
         self.is_link = is_link    # ショートカット (symlink/.lnk) なら True
+        self.ext = ext
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         # PySide6 では super().__lt__() が再帰しクラッシュするため Python 側で比較
@@ -113,7 +119,37 @@ class _NameItem(QTableWidgetItem):
                 return self.is_parent   # ".." 行は常に最先頭
             if self.is_dir != other.is_dir:
                 return self.is_dir       # フォルダを先頭へ
+            # 同じ stem なら拡張子で安定化 (例: 報告書.pdf < 報告書.xlsx)
+            s, o = self.text().casefold(), other.text().casefold()
+            if s == o:
+                return self.ext < other.ext
+            return s < o
         return self.text().casefold() < other.text().casefold()
+
+
+class _ExtItem(QTableWidgetItem):
+    """拡張子列セル: 表示は大文字 (PDF/JPG/PNG)、行カテゴリ別の安定ソート用。
+
+    フォルダ・".."・ショートカット行は ext='' で先頭にまとまる。
+    """
+
+    def __init__(self, ext: str, is_dir: bool, is_parent: bool = False) -> None:
+        super().__init__(ext)
+        self.is_dir = is_dir
+        self.is_parent = is_parent
+        self.ext = ext
+        self.setTextAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _ExtItem):
+            if self.is_parent != other.is_parent:
+                return self.is_parent
+            if self.is_dir != other.is_dir:
+                return self.is_dir
+            return self.ext < other.ext
+        return self.text() < other.text()
 
 
 class _SizeItem(QTableWidgetItem):
@@ -138,16 +174,51 @@ class _DropButton(QPushButton):
 
     Inbox 起点の D&D を受け取った時のみアクセプトし、parent CasePane の
     `_on_inbox_drop(view_id, src_path)` を呼び出す。
+
+    幅が狭く全文表示できない時は末尾省略 (…) を描画し、ツールチップで
+    フル名を確認できるようにする。リサイズ時にも追従。
     """
 
     def __init__(self, view_id: int, label: str, pane: "CasePane") -> None:
         super().__init__(label, pane)
         self._view_id = view_id
         self._pane = pane
+        self._full_label = label
+        self.setToolTip(label)
         self.setAcceptDrops(True)
+
+    def _set_drop_hover(self, on: bool) -> None:
+        """drag が入ってきた時の強調色 (黄色) / 抜けたら戻す。
+        QSS の :checked と競合しないよう setStyleSheet で動的に上書き。"""
+        if on:
+            self.setStyleSheet(
+                "QPushButton#folderBtn { background-color: #FFFFC8; "
+                "border: 2px solid #000080; padding: 0 2px; }"
+            )
+        else:
+            self.setStyleSheet("")
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._apply_elide()
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        avail = self.width() - 12   # 左右 padding + アイコン余裕
+        if avail <= 0:
+            return
+        elided = self.fontMetrics().elidedText(
+            self._full_label, Qt.TextElideMode.ElideRight, avail,
+        )
+        if elided != self.text():
+            super().setText(elided)
 
     def dragEnterEvent(self, e) -> None:
         if kfile_source_of(e.mimeData()) == SRC_INBOX:
+            self._set_drop_hover(True)
             e.acceptProposedAction()
         else:
             e.ignore()
@@ -158,10 +229,15 @@ class _DropButton(QPushButton):
         else:
             e.ignore()
 
+    def dragLeaveEvent(self, e) -> None:
+        self._set_drop_hover(False)
+        super().dragLeaveEvent(e)
+
     def dropEvent(self, e) -> None:
+        self._set_drop_hover(False)
         paths = kfile_local_paths(e.mimeData())
         if paths and kfile_source_of(e.mimeData()) == SRC_INBOX:
-            self._pane._on_inbox_drop(self._view_id, paths[0])
+            self._pane._on_inbox_drop(self._view_id, paths)
             e.acceptProposedAction()
         else:
             e.ignore()
@@ -199,28 +275,99 @@ class _DropTabBar(QTabBar):
         if not paths:
             e.ignore()
             return
-        self._pane._on_case_tab_drop(target_idx, paths[0])
+        self._pane._on_case_tab_drop(target_idx, paths)
         e.acceptProposedAction()
 
 
 class _DragCaseTable(QTableWidget):
-    """事件ファイル一覧: drag 起点。クロス事件 Move のためにパスを MIME に載せる。"""
+    """事件ファイル一覧: drag 起点 + folder 行への Inbox D&D drop 受け入れ。
+
+    - 自テーブル → 別事件タブへの drag: クロス事件 Move (パスを MIME に載せる)
+    - Inbox → 自テーブル内の folder 行への drop: そのフォルダへ inject 投入
+      (孫フォルダ等、サブフォルダボタンに割当がない深い階層への投入手段)
+    """
+
+    tabPressed = Signal()   # Tab / Shift+Tab で Inbox テーブルにフォーカス移動
 
     def __init__(self, pane: "CasePane") -> None:
-        super().__init__(0, 3, pane)
+        super().__init__(0, 4, pane)
         self._pane = pane
         self.setDragEnabled(True)
-        self.setDragDropMode(QTableWidget.DragDropMode.DragOnly)
+        # DragDrop = drag 起点としても drop 受け入れ先としても機能する
+        self.setDragDropMode(QTableWidget.DragDropMode.DragDrop)
+        self.setAcceptDrops(True)
+
+    def keyPressEvent(self, e) -> None:
+        if e.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self.tabPressed.emit()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        if hasattr(self._pane, "_apply_responsive_columns"):
+            self._pane._apply_responsive_columns()
 
     def startDrag(self, _actions) -> None:
-        entry = self._pane.selected_entry()
-        if entry is None:
+        entries = self._pane.selected_entries()
+        if not entries:
             return
-        path, _is_dir = entry
+        paths = [p for p, _is_dir in entries]
         drag = QDrag(self)
-        drag.setMimeData(make_kfile_mime_data(SRC_CASE, path))
+        drag.setMimeData(make_kfile_mime_data(SRC_CASE, paths))
+        from PySide6.QtCore import QPoint
+        drag.setPixmap(make_drag_pixmap([p.name for p in paths]))
+        drag.setHotSpot(QPoint(-12, -12))
         drag.exec(Qt.DropAction.MoveAction | Qt.DropAction.CopyAction,
                   Qt.DropAction.MoveAction)
+
+    # ── Inbox → テーブルへの drop = 現在表示中フォルダに投入 ─────
+    # 「テーブルに投げたら、いま見えているフォルダに入る」の方が
+    # フォルダ行への精密 drop より直感的。ネストの孫/曾孫もここに含まれる。
+    def _set_drop_hover(self, on: bool) -> None:
+        if on:
+            self.setStyleSheet(
+                "QTableWidget { background-color: #FFFFC8; "
+                "border: 2px solid #000080; }"
+            )
+        else:
+            self.setStyleSheet("")
+
+    def dragEnterEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_INBOX:
+            self._set_drop_hover(True)
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        if kfile_source_of(e.mimeData()) == SRC_INBOX:
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e) -> None:
+        self._set_drop_hover(False)
+        super().dragLeaveEvent(e)
+
+    def dropEvent(self, e) -> None:
+        self._set_drop_hover(False)
+        if kfile_source_of(e.mimeData()) != SRC_INBOX:
+            e.ignore()
+            return
+        paths = kfile_local_paths(e.mimeData())
+        if not paths:
+            e.ignore()
+            return
+        target_dir = self._pane._cur_dir
+        if target_dir is None:
+            e.ignore()
+            return
+        self._pane.inboxDropToFolderRequested.emit(
+            str(target_dir), [str(p) for p in paths]
+        )
+        e.acceptProposedAction()
 
 
 class CasePane(QWidget):
@@ -229,9 +376,11 @@ class CasePane(QWidget):
     # Alt+0〜9 / 右クリックメニュー = 投入要求 (実投入は M3)
     subfolderInjectRequested = Signal(int, str)  # (view_id, view_name)
     # Inbox からの D&D 投入要求 (Alt とは別シグナル — rename ダイアログは出さず即投入)
-    inboxDropInjectRequested = Signal(int, str, str)  # (view_id, view_name, src_path)
+    inboxDropInjectRequested = Signal(int, str, list)  # (view_id, view_name, src_paths)
+    # ファイル一覧内の任意フォルダ行への Inbox D&D 投入 (孫フォルダ等)
+    inboxDropToFolderRequested = Signal(str, list)     # (target_dir, src_paths)
     # 事件タブへの D&D = クロス事件 Move 要求
-    caseTabDropMoveRequested = Signal(int, str)       # (target_tab_idx, src_path)
+    caseTabDropMoveRequested = Signal(int, list)       # (target_tab_idx, src_paths)
     caseTabChanged = Signal(int, str, str)       # (idx, code, name)
     # サブフォルダ構成 (≒ Alt 割当) が変わった → 中央ストリップが再構築
     subfoldersChanged = Signal()
@@ -276,34 +425,49 @@ class CasePane(QWidget):
         outer.setSpacing(0)
 
         # ── 上端: ペインタイトル ──
-        outer.addWidget(PaneHeader("参照フォルダ"))
+        outer.addWidget(PaneHeader("参照ﾌｫﾙﾀﾞ"))
 
         # ── 事件タブ ── (cross-case D&D Move の drop ターゲットも兼ねる)
         self.case_tabs = _DropTabBar(self)
         self.case_tabs.setObjectName("caseTabBar")
         self.case_tabs.setDrawBase(False)
-        self.case_tabs.setExpanding(False)
         self.case_tabs.setTabsClosable(True)
         self.case_tabs.setMovable(True)
+        # ペイン全幅を占有 (デフォルトの Preferred だと sizeHint 止まり)
+        self.case_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        # Qt 標準のタブ動作: タブは内容サイズ固定、溢れたら左右スクロールボタンで
+        # アクセス。「タブを潰す」より「スクロールで切り替える」方が直感的。
+        self.case_tabs.setExpanding(False)
         self.case_tabs.setUsesScrollButtons(True)
+        # 単一タブ内で名前が長い場合のみ末尾省略 (今は case_code 表示なので影響少)
+        self.case_tabs.setElideMode(Qt.TextElideMode.ElideRight)
         self.case_tabs.currentChanged.connect(self._on_case_tab_changed)
         self.case_tabs.tabCloseRequested.connect(self._on_case_tab_close)
+        # 右クリックメニュー: 閉じる / 他を閉じる / 全部閉じる / Explorer で開く
+        self.case_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.case_tabs.customContextMenuRequested.connect(self._show_case_tab_menu)
         outer.addWidget(self.case_tabs)
 
         # ── 事件フォルダパス兼パンくず + デスクトップショートカットボタン ──
         path_row = QHBoxLayout()
         path_row.setContentsMargins(0, 0, 0, 0)
         path_row.setSpacing(4)
-        self.path_label = QLabel("事件フォルダ:  (事件未選択)")
+        self.path_label = QLabel("(事件未選択)")
         self.path_label.setObjectName("casePath")
         self.path_label.setTextFormat(Qt.TextFormat.RichText)
         self.path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.path_label.linkActivated.connect(self._on_crumb_click)
         path_row.addWidget(self.path_label, stretch=1)
-        self.btn_to_case = QPushButton("他事件へ")
+        # 「他事件へ」: アイコンのみ表示 (説明はホバーのツールチップに集約)。
+        # ↗ は同事件フォルダ内に置かれた他事件ショートカットの表示マーカと共通。
+        self.btn_to_case = QPushButton("↗")
         self.btn_to_case.setObjectName("caseToolBtn")
         self.btn_to_case.setToolTip(
-            "現在の事件フォルダへのショートカットを\n別事件フォルダの root に置く\n"
+            "他事件へショートカット作成\n"
+            "現在の事件フォルダへのショートカットを\n"
+            "別事件フォルダの root に置く\n"
             "(例: 夫婦事件で B 事件フォルダに A 事件のショートカットを置き、\n"
             " 文書は A に集約する運用)"
         )
@@ -326,8 +490,10 @@ class CasePane(QWidget):
         container_lay.setSpacing(0)
         # 上: 動的サブフォルダ閲覧ボタン (_rebuild_subfolder_buttons で構築)
         self.btn_col = QVBoxLayout()
-        self.btn_col.setContentsMargins(0, 0, 0, 0)
-        self.btn_col.setSpacing(0)
+        # 上端 (1 ボタンとパスバーの間) もボタン間と同じ 2px
+        self.btn_col.setContentsMargins(0, 2, 0, 0)
+        # ボタン間に 2px のすき間 (中央ストリップの >1 >2 と同じ間隔)
+        self.btn_col.setSpacing(2)
         container_lay.addLayout(self.btn_col, stretch=1)
         # 下: 区切り + 管理ボタン (+追加 / -削除)。固定で永続。
         sep = QFrame()
@@ -347,7 +513,10 @@ class CasePane(QWidget):
         )
         self.btn_del_subf.clicked.connect(self._on_delete_subfolder)
         container_lay.addWidget(self.btn_del_subf)
-        btn_container.setMaximumWidth(140)
+        # 固定幅 140 にして「Inbox 幅 ≒ 中央ファイル一覧幅」の動的計算が
+        # 実際のオーバーヘッド (_CASE_LEFT_OFFSET=148) と一致するようにする。
+        # max-width だと内容次第で実幅が変動し、Name 列幅が両ペインで不揃いになる。
+        btn_container.setFixedWidth(140)
         mid.addWidget(btn_container)
 
         # 右カラム: ファイル一覧テーブル (子フォルダも行として表示)
@@ -356,31 +525,48 @@ class CasePane(QWidget):
         right_col.setSpacing(0)
         # _DragCaseTable: 行を別事件タブへ D&D できる (cross-case Move 起点)
         self.table = _DragCaseTable(self)
-        self.table.setHorizontalHeaderLabels(["Name", "更新", "サイズ"])
+        self.table.setHorizontalHeaderLabels(["Name", "拡張子", "更新", "サイズ"])
         self.table.setIconSize(QSize(13, 13))
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.table.verticalHeader().setDefaultSectionSize(14)
-        self.table.verticalHeader().setMinimumSectionSize(14)
-        self.table.horizontalHeader().setFixedHeight(15)
+        self.table.verticalHeader().setDefaultSectionSize(18)
+        self.table.verticalHeader().setMinimumSectionSize(18)
+        self.table.horizontalHeader().setFixedHeight(17)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        # 複数選択可能 (Shift で範囲 / Ctrl で個別 toggle)。削除 / D&D は
+        # 全選択行に対して順次実行される (rename = F2 のみ単一行限定)。
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
+        # 縦スクロールバーを常時表示 (InboxPane と viewport 幅を揃え、Name 列幅を
+        # 両ペインで一致させるため。AsNeeded だと片方だけ 12px 狭くなる)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.table.setSortingEnabled(True)
         self.table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
-        self.table.setColumnWidth(1, 90)
-        self.table.setColumnWidth(2, 70)
+        self.table.setColumnWidth(1, 60)    # 拡張子 (.PDF / .JPEG)
+        self.table.setColumnWidth(2, 110)   # 更新 (12pt 等幅で YYYY-MM-DD)
+        self.table.setColumnWidth(3, 90)    # サイズ
         self.table.cellDoubleClicked.connect(self._on_table_double_click)
+        # Enter / Return: 選択行をダブルクリック相当で活性化
+        # (ファイル → 既定アプリ / フォルダ → descend / .. → 上へ)
+        sc_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
+        sc_enter.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_enter.activated.connect(self._activate_current_row)
+        sc_enter_kp = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
+        sc_enter_kp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_enter_kp.activated.connect(self._activate_current_row)
         self.table.itemSelectionChanged.connect(self._on_table_selection)
         # ヘッダー右クリック (サイズ列のみ) → KB/MB 切替メニュー
         # 左クリックはソートに専念させる (役割が違うので分離 — ユーザー要望)
         hdr = self.table.horizontalHeader()
         hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         hdr.customContextMenuRequested.connect(self._show_header_menu)
+        # 行右クリック → 「既定アプリで開く」「Explorer で開く」「フルパスをコピー」
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_row_menu)
         right_col.addWidget(self.table, stretch=1)
         right_container = QWidget()
         right_container.setLayout(right_col)
@@ -432,6 +618,44 @@ class CasePane(QWidget):
             self._load_case(idx)
             self.caseTabChanged.emit(idx, self._case_code, self._case_name)
 
+    def _show_case_tab_menu(self, pos) -> None:
+        """事件タブの右クリックメニュー。"""
+        idx = self.case_tabs.tabAt(pos)
+        if idx < 0:
+            return
+        if not 0 <= idx < len(self._case_paths):
+            return
+        path = self._case_paths[idx]
+        menu = QMenu(self)
+        act_close = menu.addAction("このタブを閉じる")
+        act_close.triggered.connect(lambda: self._on_case_tab_close(idx))
+        if len(self._case_paths) > 1:
+            act_other = menu.addAction("他のタブを閉じる")
+            act_other.triggered.connect(lambda: self._close_other_tabs(idx))
+            act_all = menu.addAction("すべてのタブを閉じる")
+            act_all.triggered.connect(self._close_all_tabs)
+        menu.addSeparator()
+        act_reveal = menu.addAction("Explorer で開く")
+        act_reveal.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        )
+        act_copy = menu.addAction("フルパスをコピー")
+        act_copy.triggered.connect(
+            lambda: self._copy_to_clipboard(str(path))
+        )
+        menu.exec(self.case_tabs.mapToGlobal(pos))
+
+    def _close_other_tabs(self, keep_idx: int) -> None:
+        """keep_idx 以外のタブを全て閉じる (末尾から削除して index ズレ回避)。"""
+        keep_path = self._case_paths[keep_idx]
+        for i in reversed(range(len(self._case_paths))):
+            if self._case_paths[i] != keep_path:
+                self._on_case_tab_close(i)
+
+    def _close_all_tabs(self) -> None:
+        for i in reversed(range(len(self._case_paths))):
+            self._on_case_tab_close(i)
+
     def _on_case_tab_close(self, idx: int) -> None:
         if 0 <= idx < len(self._case_paths):
             self._case_paths.pop(idx)
@@ -441,7 +665,7 @@ class CasePane(QWidget):
             self._scan = None
             self._case_code = ""
             self._case_name = ""
-            self.path_label.setText("事件フォルダ:  (事件未選択)")
+            self.path_label.setText("(事件未選択)")
             # サブフォルダボタン群 + ファイル一覧を空に
             while self.btn_col.count():
                 item = self.btn_col.takeAt(0)
@@ -502,17 +726,22 @@ class CasePane(QWidget):
 
     # ───────── D&D 受信ハンドラ (_DropButton / _DropTabBar から呼ばれる) ─────────
 
-    def _on_inbox_drop(self, view_id: int, src_path: Path) -> None:
-        """サブフォルダボタンに Inbox ファイルが drop された。"""
+    def _on_inbox_drop(self, view_id: int, src_paths: list[Path]) -> None:
+        """サブフォルダボタンに Inbox ファイル群が drop された。"""
         self.inboxDropInjectRequested.emit(
-            view_id, self._view_name(view_id), str(src_path)
+            view_id, self._view_name(view_id),
+            [str(p) for p in src_paths],
         )
         # 投入先の中身を表示 (Alt 投入と同じ挙動)
         self._browse(view_id)
 
-    def _on_case_tab_drop(self, target_idx: int, src_path: Path) -> None:
-        """事件タブに 事件ファイルが drop された (= クロス事件 Move)。"""
-        self.caseTabDropMoveRequested.emit(target_idx, str(src_path))
+    def _on_case_tab_drop(
+        self, target_idx: int, src_paths: list[Path]
+    ) -> None:
+        """事件タブに 事件ファイル群が drop された (= クロス事件 Move)。"""
+        self.caseTabDropMoveRequested.emit(
+            target_idx, [str(p) for p in src_paths]
+        )
 
     # ───────── ビュー / ネストナビゲーション ─────────
 
@@ -570,9 +799,18 @@ class CasePane(QWidget):
             self._cur_dir = self._crumb[-1][1]
             self._show_current()
 
+    def _activate_current_row(self) -> None:
+        """Enter キー: 現在行をダブルクリック相当で活性化。"""
+        row = self.table.currentRow()
+        if row >= 0:
+            self._on_table_double_click(row, 0)
+
     def _on_table_double_click(self, row: int, _col: int) -> None:
-        """ファイル一覧の行をダブルクリック: `..` は上へ、ショートカットは
-        事件タブ切替、それ以外のフォルダなら descend。"""
+        """ファイル一覧の行をダブルクリック:
+          - `..` 行: 一階層上へ
+          - ショートカット: 事件タブ切替 (or 通常 descend)
+          - フォルダ: descend
+          - ファイル: OS 既定アプリで開く"""
         item = self.table.item(row, 0)
         if not isinstance(item, _NameItem):
             return
@@ -580,14 +818,16 @@ class CasePane(QWidget):
             self._go_up()
             return
         if item.is_link:
-            # 事件ショートカットなら MainWindow にタブ切替を依頼。
-            # 失敗 (target 未解決 / doc_root 外) はフォールバックで通常 descend。
             if self._try_activate_case_shortcut(item.path):
                 return
         if item.is_dir:
             self._cur_dir = item.path
             self._crumb.append((item.text(), item.path))
             self._show_current()
+        else:
+            # ファイル → OS 既定アプリ起動 (Windows = Explorer の関連付け、
+            # Linux = xdg-open、Mac = LaunchServices)。プレビューと併用。
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.path)))
 
     def _try_activate_case_shortcut(self, path: Path) -> bool:
         """symlink/.lnk のターゲットが ksystemz doc_root 直下の事件フォルダなら
@@ -637,8 +877,8 @@ class CasePane(QWidget):
             self._show_current()
 
     def _update_breadcrumb(self) -> None:
-        """パスバーを「事件フォルダ: 〜 › サブ › サブサブ」のパンくず表示に。"""
-        text = f"事件フォルダ:  {self._case_code}  {self._case_name}"
+        """パスバーを「R060... 鈴木花子 離婚 › サブ › サブサブ」のパンくず表示に。"""
+        text = f"{self._case_code}  {self._case_name}"
         last = len(self._crumb) - 1
         for i, (name, _path) in enumerate(self._crumb):
             if i == last:
@@ -693,56 +933,73 @@ class CasePane(QWidget):
         if has_parent:
             parent_item = _NameItem("..", True, parent_path, is_parent=True)
             self.table.setItem(row, 0, parent_item)
+            self.table.setItem(row, 1, _ExtItem("", True, is_parent=True))
             empty_date = QTableWidgetItem("")
             empty_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 1, empty_date)
-            size_cell = QTableWidgetItem("フォルダ")
+            self.table.setItem(row, 2, empty_date)
+            size_cell = QTableWidgetItem("<DIR>")
             size_cell.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
-            self.table.setItem(row, 2, size_cell)
-            self.table.setRowHeight(row, 14)
+            self.table.setItem(row, 3, size_cell)
+            self.table.setRowHeight(row, 18)
             row += 1
 
         for e in entries:
+            # 拡張子は別列に分離。フォルダ・ショートカット行は空。
+            # ファイルは stem を Name に、拡張子を大文字で EXT 列に出す。
+            # 拡張子はドット付き大文字 (例: .PDF .JPG)。フォルダ・ショートカット
+            # 行は空文字。Path.suffix は既に "." を含むため upper() のみで OK。
+            ext_upper = ""
+            if not e.is_dir and not e.is_link:
+                ext_upper = e.path.suffix.upper()
+            if e.is_dir or e.is_link:
+                stem_display = e.name
+            else:
+                stem_display = e.path.stem
             # ショートカット行は ↗ プレフィックス + .lnk 拡張子を表示から省く
-            display_name = e.name
-            if e.is_link and display_name.lower().endswith(".lnk"):
-                display_name = display_name[:-4]
+            if e.is_link and stem_display.lower().endswith(".lnk"):
+                stem_display = stem_display[:-4]
             if e.is_link:
-                display_name = "↗ " + display_name
+                stem_display = "↗ " + stem_display
             name_item = _NameItem(
-                display_name, e.is_dir, e.path, is_link=e.is_link,
+                stem_display, e.is_dir, e.path,
+                is_link=e.is_link, ext=ext_upper,
             )
-            if e.is_dir:
-                name_item.setIcon(self._dir_icon)
+            # アイコンは表示しない (DOS ファイラー風、サイズ列の <DIR> でフォルダ判別)
             self.table.setItem(row, 0, name_item)
+            self.table.setItem(
+                row, 1, _ExtItem(ext_upper, e.is_dir)
+            )
 
             date = datetime.fromtimestamp(e.mtime).strftime("%Y-%m-%d")
             item_date = QTableWidgetItem(date)
             item_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 1, item_date)
+            self.table.setItem(row, 2, item_date)
 
             if e.is_dir:
-                item_size = QTableWidgetItem("フォルダ")
+                item_size = QTableWidgetItem("<DIR>")
                 item_size.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
-                self.table.setItem(row, 2, item_size)
+                self.table.setItem(row, 3, item_size)
             else:
-                self.table.setItem(row, 2, _SizeItem(e.size, self._size_unit))
-            self.table.setRowHeight(row, 14)
+                self.table.setItem(row, 3, _SizeItem(e.size, self._size_unit))
+            self.table.setRowHeight(row, 18)
             row += 1
 
+        # 現在の sortIndicator を尊重して再ソート (KB/MB 切替等で勝手に
+        # 既定列に戻さない)。初回 populate 時のみ既定 (Name 昇順) を採用。
         self.table.setSortingEnabled(True)
-        # 既定の並び: ".." > フォルダ > ファイル (各々名前昇順)
-        self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+        if not getattr(self, "_sort_initialized", False):
+            self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+            self._sort_initialized = True
 
     def _show_header_menu(self, pos) -> None:
         """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""
         hdr = self.table.horizontalHeader()
         col = hdr.logicalIndexAt(pos)
-        if col != 2:
+        if col != 3:    # 0=Name / 1=EXT / 2=更新 / 3=サイズ
             return
         menu = QMenu(self)
         act_kb = menu.addAction("KB で表示")
@@ -758,6 +1015,40 @@ class CasePane(QWidget):
         if new_unit != self._size_unit:
             self._size_unit = new_unit
             self._show_current()
+
+    def _show_row_menu(self, pos) -> None:
+        """ファイル一覧 行の右クリックメニュー。
+        対象が `..` 行や未選択なら出さない。フォルダ行は「Explorer で開く」のみ。"""
+        row = self.table.indexAt(pos).row()
+        item = self.table.item(row, 0) if row >= 0 else None
+        if not isinstance(item, _NameItem) or item.is_parent:
+            return
+        menu = QMenu(self)
+        if item.is_dir:
+            act_open = menu.addAction("フォルダを開く (Explorer)")
+            act_open.triggered.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.path)))
+            )
+        else:
+            act_open = menu.addAction("既定アプリで開く")
+            act_open.triggered.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.path)))
+            )
+            act_reveal = menu.addAction("フォルダを開く (Explorer)")
+            act_reveal.triggered.connect(
+                lambda: QDesktopServices.openUrl(
+                    QUrl.fromLocalFile(str(item.path.parent))
+                )
+            )
+        act_copy = menu.addAction("フルパスをコピー")
+        act_copy.triggered.connect(lambda: self._copy_to_clipboard(str(item.path)))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        from PySide6.QtWidgets import QApplication
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb.setText(text)
 
     # ───────── サブフォルダ管理 / 事件フォルダ管理 (+ / − / デスクトップ) ─────────
 
@@ -816,16 +1107,16 @@ class CasePane(QWidget):
         self.deleteRequested.emit(str(sf.path))
 
     def delete_selected_row(self) -> None:
-        """Del キー: 中央テーブルの選択行を削除要求。
+        """Del キー: 中央テーブルの選択行を削除要求 (multi-select 対応)。
 
         ファイル / ネストフォルダ どちらでも可。`..` 行と未選択は無視。
         """
-        entry = self.selected_entry()
-        if entry is None:
+        entries = self.selected_entries()
+        if not entries:
             self.actionStatus.emit("削除する行が選択されていません")
             return
-        path, _is_dir = entry
-        self.deleteRequested.emit(str(path))
+        for path, _is_dir in entries:
+            self.deleteRequested.emit(str(path))
 
     def _show_other_cases_menu(self) -> None:
         """「他事件へ」ボタン: 開いている他の事件タブをメニュー表示。"""
@@ -931,10 +1222,13 @@ class CasePane(QWidget):
                 if self.case_tabs.currentIndex() != i:
                     self.case_tabs.setCurrentIndex(i)
                 return i
-        # 新規追加
+        # 新規追加。タブラベルは依頼者名+案件名 (case_code は短いがコード番号
+        # だけだと事件が識別しにくい)。長くて溢れる場合はスクロールボタンで
+        # アクセスする。フル名はツールチップで確認可。
         self._case_paths.append(path)
         code, name = _parse_case(path)
-        new_idx = self.case_tabs.addTab(f"{code} {name}")
+        new_idx = self.case_tabs.addTab(name)
+        self.case_tabs.setTabToolTip(new_idx, f"{code}  {name}")
         # 初回の addTab は currentChanged を発火するので _load_case 自動呼出し。
         # 2 件目以降は自動選択されないので明示的に setCurrentIndex で発火させる。
         if self.case_tabs.currentIndex() != new_idx:
@@ -949,7 +1243,7 @@ class CasePane(QWidget):
     def selected_entry(self) -> tuple[Path, bool] | None:
         """中央テーブルで選択中の (ファイル|フォルダ) の (path, is_dir)。
 
-        `..` 行や未選択時は None。F2 / Del 等のハンドラから使う。
+        `..` 行や未選択時は None。F2 等の単一行ハンドラから使う。
         """
         row = self.table.currentRow()
         if row < 0:
@@ -958,6 +1252,19 @@ class CasePane(QWidget):
         if not isinstance(item, _NameItem) or item.is_parent:
             return None
         return item.path, item.is_dir
+
+    def selected_entries(self) -> list[tuple[Path, bool]]:
+        """multi-select 全行の (path, is_dir) リスト。`..` 行は除外。
+        cross-case D&D / Del / 等の複数行操作で使う。"""
+        rows = [
+            ix.row() for ix in self.table.selectionModel().selectedRows()
+        ]
+        out: list[tuple[Path, bool]] = []
+        for r in sorted(set(rows)):
+            item = self.table.item(r, 0)
+            if isinstance(item, _NameItem) and not item.is_parent:
+                out.append((item.path, item.is_dir))
+        return out
 
     def select_path_in_table(self, path: Path) -> None:
         """指定パスの行を選択状態にする (rename 直後にフォーカスを保つため)。"""
@@ -1071,11 +1378,12 @@ class CasePane(QWidget):
             )
             return
 
-        # 内部状態 + タブ表示 + 走査結果を更新
+        # 内部状態 + タブ表示 + 走査結果を更新 (タブラベルは依頼者名+案件名)
         self._case_paths[idx] = new_path
         code, name = _parse_case(new_path)
         self.case_tabs.blockSignals(True)
-        self.case_tabs.setTabText(idx, f"{code} {name}")
+        self.case_tabs.setTabText(idx, name)
+        self.case_tabs.setTabToolTip(idx, f"{code}  {name}")
         self.case_tabs.blockSignals(False)
         self._load_case(idx)
 
@@ -1086,6 +1394,34 @@ class CasePane(QWidget):
         if 0 <= idx < len(self._case_paths):
             return _parse_case(self._case_paths[idx])
         return ("?", "?")
+
+    def set_compact(self, compact: bool) -> None:
+        """プレビュー展開時 (3 カラムモード) は Name 列のみに絞り、
+        ペインが狭くてもファイル名が読めるようにする (InboxPane と同方針)。
+        """
+        self._compact = compact
+        self._apply_responsive_columns()
+
+    def _apply_responsive_columns(self) -> None:
+        """テーブル幅に応じて列の表示を調整する (ファイル名を最優先)。
+
+        - compact (プレビュー展開時): EXT / 更新 / サイズ を全て隠す
+        - 通常時: Name 最低 120px を確保した上で 更新 列を 0〜110px で伸縮、
+          余地が 30px 未満なら更新列も隠す。EXT / サイズ は固定で維持。
+        """
+        if getattr(self, "_compact", False):
+            for col in (1, 2, 3):
+                self.table.setColumnHidden(col, True)
+            return
+        self.table.setColumnHidden(1, False)
+        self.table.setColumnHidden(3, False)
+        viewport_w = self.table.viewport().width()
+        date_avail = viewport_w - (60 + 90 + 120)
+        if date_avail < 30:
+            self.table.setColumnHidden(2, True)
+        else:
+            self.table.setColumnHidden(2, False)
+            self.table.setColumnWidth(2, min(date_avail, 110))
 
     def set_inbox_file_getter(self, getter) -> None:
         """右クリック投入メニューが Inbox の選択ファイル名を問い合わせる getter。

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
 
@@ -36,15 +37,19 @@ class AboutDialog(QDialog):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog
         )
         self.setModal(True)
-        self.setFixedSize(360, 175)
+        # 9pt ダイアログサイズ (本体より小ぶり)
+        self.setFixedSize(380, 200)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        # 2px = ダイアログ本体の raised 外縁 (QSS border-* 2px) と重ならない
+        # よう内側に逃がす。0 だと TitleBar が左端の白枠を上書きして「左に
+        # はみ出ている」ように見えていた。
+        outer.setContentsMargins(2, 2, 2, 2)
         outer.setSpacing(0)
 
         # ── Win95 風タイトルバー (× のみ) ──
         self.title_bar = TitleBar(self, minimal=True)
-        self.title_bar.set_title("k-file のバージョン情報")
+        self.title_bar.set_title("K-FILE のバージョン情報")
         outer.addWidget(self.title_bar)
 
         # ── 本文 (内側ラッパ QWidget を作らず QVBoxLayout 直挿し) ──
@@ -65,7 +70,7 @@ class AboutDialog(QDialog):
 
         text_col = QVBoxLayout()
         text_col.setSpacing(3)
-        app_name = QLabel("k-file — 案件ドキュメント作業台")
+        app_name = QLabel("K-FILE — 案件ドキュメント作業台")
         app_name.setObjectName("aboutAppName")
         text_col.addWidget(app_name)
         text_col.addWidget(QLabel("バージョン M5 (K-SystemZ 連携 + 設定 + 復元)"))
@@ -101,3 +106,5 @@ class AboutDialog(QDialog):
         if parent is not None:
             c = parent.geometry().center()
             self.move(c.x() - self.width() // 2, c.y() - self.height() // 2)
+        # 本体と同じ MS Gothic ビットマップ + ダイアログは 9pt に
+        apply_bitmap_font_strategy(self, point_size=9)
