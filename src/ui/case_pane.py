@@ -52,6 +52,7 @@ from src.core.folder_scanner import (
     list_folder,
     scan_case_folder,
 )
+from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.dnd import (
     SRC_CASE,
     SRC_INBOX,
@@ -707,6 +708,11 @@ class CasePane(QWidget):
         self._view_btns[ROOT_VIEW_ID] = root_btn
 
         self.btn_col.addStretch(1)
+
+        # 新規ボタンに MS Gothic ビットマップ戦略を再適用 (QSS の font-family
+        # が新 widget で strategy をリセットするため、ADR-17 と同方式で
+        # widget tree を walk して strategy 再付与)
+        apply_bitmap_font_strategy(self)
 
         # 中央ストリップに最新のサブフォルダ構成を反映してもらう
         self.subfoldersChanged.emit()

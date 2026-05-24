@@ -15,6 +15,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QPushButton, QVBoxLayout, QWidget
 
+from src.ui._font_strategy import apply_bitmap_font_strategy
+
 
 class CommandStrip(QWidget):
     """Inbox と参照フォルダの間に挟む細い縦バー。"""
@@ -115,6 +117,8 @@ class CommandStrip(QWidget):
             self._lay.insertWidget(insert_at, btn)
             self._target_btns.append(btn)
             insert_at += 1
+        # 新規ボタンに MS Gothic ビットマップ戦略を再適用 (ADR-17 と同方式)
+        apply_bitmap_font_strategy(self)
 
     def _make_btn(self, label: str, tooltip: str) -> QPushButton:
         btn = QPushButton(label)

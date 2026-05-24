@@ -794,6 +794,11 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   (個別 rule は font-size のみ例外指定。`font-family` を書くとそこから下は再び strategy リセット)。
 - **新規ダイアログを追加する時** は `apply_bitmap_font_strategy(self)` を `__init__` 末尾で呼ぶこと。
   ダイアログ 9pt なら `apply_bitmap_font_strategy(self, point_size=9)`。
+- **動的に widget を再生成する場所** (事件タブ切替に伴う `case_pane._rebuild_subfolder_buttons()`
+  / `command_strip.set_subfolder_targets()` 等) でも、新規 widget には QSS の
+  `font-family` が再適用されて strategy が失われるため、生成直後に
+  `apply_bitmap_font_strategy(self)` を呼ぶこと。これを忘れると「最初は
+  ビットマップ MS Gothic、タブ切替したら滑らかなベクトル」というちぐはぐが発生する。
 
 ### ADR-18: Inbox 幅 ≒ 中央ファイル名列幅 を resize の度に強制計算 (2026-05-24)
 - **経緯**: 旧コードでは splitter に `setStretchFactor(0,1)(1,2)(2,2)` を設定して
