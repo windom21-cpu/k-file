@@ -97,9 +97,21 @@ def list_inbox_files(
     """
     base = now if now is not None else time.time()
     out: list[InboxFile] = []
+    # 同じ実パスが複数ソースに重複登録された場合の二重表示を防止。
+    # 2026-05-25 本番テスト: Desktop 行が dev デフォルトに 2 つあり、ユーザーが
+    # 両方とも実 Windows デスクトップに向けたら各ファイルが 2 倍表示される事故が
+    # 発生 → resolve 済みパスで dedupe する保険を入れる (最初に出現したラベルを採用)。
+    seen_resolved: set[Path] = set()
     for src in sources:
         if not src.path.is_dir():
             continue
+        try:
+            resolved = src.path.resolve()
+        except OSError:
+            resolved = src.path
+        if resolved in seen_resolved:
+            continue
+        seen_resolved.add(resolved)
         cutoff_ts = (
             base - src.cutoff_days * 86400 if src.cutoff_days is not None else None
         )

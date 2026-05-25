@@ -154,6 +154,27 @@ def test_list_inbox_files_cutoff_per_source(tmp_path: Path):
     assert names == {"scan_old.pdf", "desk_new.pdf"}
 
 
+def test_list_inbox_files_dedup_same_path(tmp_path: Path):
+    """同じパスを 2 つのソースで指定しても、ファイルは 1 回だけ出る。
+
+    本番テスト (2026-05-25) で「Desktop 2 件を両方とも実 Win デスクトップに
+    変えたら各ファイルが 2 倍表示」事故が発生 → resolve 済みパスで dedupe する
+    保険を入れた。先に来たソースのラベルが採用される。
+    """
+    desk = tmp_path / "desktop"
+    desk.mkdir()
+    _touch(desk / "a.pdf")
+    _touch(desk / "b.png")
+
+    sources = [
+        InboxSource("Desktop", desk),
+        InboxSource("Desktop", desk),     # 同じパスを 2 回登録
+    ]
+    result = list_inbox_files(sources)
+    names = [f.name for f in result]
+    assert sorted(names) == ["a.pdf", "b.png"]    # 2 倍にならない
+
+
 def test_list_inbox_files_missing_source_ignored(tmp_path: Path):
     """存在しないパスのソースは静かに無視される (起動時の早期 fail を避ける)。"""
     real = tmp_path / "real"

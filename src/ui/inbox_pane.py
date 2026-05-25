@@ -78,14 +78,15 @@ class _DragTable(QTableWidget):
 
 
 def format_size(n: int, unit: str = "KB") -> str:
-    """バイト数を KB 統一 (既定) または MB 統一でフォーマット。
+    """バイト数を 3 桁カンマ区切りで返す (単位文字は付けない)。
 
-    ヘッダー右クリックのメニューで KB/MB を切替可能 (両ペイン独立)。
-    KB は整数で粒度十分、MB は小数 1 桁で見やすさ優先。
+    ヘッダー右クリックメニューで KB/MB を切替可能 (両ペイン独立)。KB は整数、
+    MB は小数 1 桁。単位はヘッダー右クリックメニューでユーザーが選んだ状態を
+    覚えている前提なので、セル側には付けず数値だけ見せる (2026-05-25 要望)。
     """
     if unit == "MB":
-        return f"{n / (1024 * 1024):.1f}MB"
-    return f"{n // 1024}KB"
+        return f"{n / (1024 * 1024):,.1f}"
+    return f"{n // 1024:,}"
 
 
 class _SizeCell(QTableWidgetItem):
@@ -103,13 +104,18 @@ class _SizeCell(QTableWidgetItem):
             return self._size < other._size
         return self.text() < other.text()
 
-# M2 dev: Inbox 監視対象フォルダ。M5 で settings (kfile.db) から読むようにする。
-# Desktop は << で戻したファイルが round-trip できるよう、実デスクトップも
-# 同じ "Desktop" ラベルで合流させる (同名ラベル → 同じフィルタタブに集約)。
-# 実 Desktop は長期蓄積場所なので cutoff_days=7 で過去 PDF を自動非表示。
+# 初回起動 (settings 未保存) で使われる Inbox 監視先デフォルト。
+# 設計上の役割は「業務上代表的な 3 出所」を 1 つずつ:
+#   - scan: 複合機の取り込み先
+#   - Desktop: ユーザーの実デスクトップ (round-trip 動線 ADR-9 の終点)
+#   - 作業: 一時作業フォルダ
+# Win 機本番で問題化した「Desktop が 2 件並び、両方とも実デスクトップに
+# 向けると重複表示」(2026-05-25 本番テスト報告) を避けるため、dev fake
+# デスクトップ (k-file-test-data/inbox-desktop) は撤去し Desktop は 1 件のみ。
+# scan/作業 は Linux dev 環境向けの fake パスのまま (Win 機では存在せず
+# 自然に無視される。ユーザーが設定ダイアログで実 Win パスに置き換える前提)。
 _DEV_INBOX_SOURCES: list[InboxSource] = [
     InboxSource("scan", Path.home() / "k-file-test-data" / "inbox-scan"),
-    InboxSource("Desktop", Path.home() / "k-file-test-data" / "inbox-desktop"),
     InboxSource("Desktop", Path.home() / "デスクトップ", cutoff_days=7),
     InboxSource("作業", Path.home() / "k-file-test-data" / "inbox-work"),
 ]
@@ -168,8 +174,11 @@ class InboxPane(QWidget):
 
         # ファイル一覧 (CasePane と列構成を統一: Name + EXT + 更新 + サイズ、行高 18px)
         # _DragTable は drag 起点 (サブフォルダボタンへ D&D 投入できる)。
+        # サイズ列ヘッダーは KB/MB 切替に追従 (`ｻｲｽﾞ (KB)` ↔ `ｻｲｽﾞ (MB)`)。
         self.table = _DragTable(self)
-        self.table.setHorizontalHeaderLabels(["Name", "拡張子", "更新", "サイズ"])
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "拡張子", "更新", "ｻｲｽﾞ (KB)"]
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setDefaultSectionSize(18)
@@ -179,7 +188,9 @@ class InboxPane(QWidget):
             0, QHeaderView.ResizeMode.Stretch
         )
         self.table.setColumnWidth(1, 60)    # 拡張子 (.PDF / .JPEG)
-        self.table.setColumnWidth(2, 110)   # 更新 (MM-DD HH:MM、時刻まで表示)
+        # 更新 (YY-MM-DD HH:MM、14 文字)。初期表示で省略されないよう 130px 確保
+        # (狭幅時は _apply_responsive_columns で縮小、最終的に非表示にもなる)
+        self.table.setColumnWidth(2, 130)
         self.table.setColumnWidth(3, 90)    # サイズ
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         # 複数選択可能 (Shift で範囲 / Ctrl で個別 toggle)。投入 / 削除 / D&D は
@@ -245,7 +256,7 @@ class InboxPane(QWidget):
             self.table.setColumnHidden(2, True)
         else:
             self.table.setColumnHidden(2, False)
-            self.table.setColumnWidth(2, min(date_avail, 110))
+            self.table.setColumnWidth(2, min(date_avail, 130))
 
     def reload_sources(self, sources: list[InboxSource]) -> None:
         """設定変更時に監視先を差し替える (古い QFileSystemWatcher を破棄)。"""
@@ -313,11 +324,10 @@ class InboxPane(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
 
-            # Inbox は「今日のスキャン / 昨日の作業」を区別したい用途なので、
-            # 年は省いて月日 + 時分を表示する (本番テスト要望 2026-05-25)。
-            # 12月→1月の年またぎで文字列ソート順が崩れるが、Inbox は cutoff_days
-            # で短期間に絞っているので実害なし。
-            date_str = datetime.fromtimestamp(f.mtime).strftime("%m-%d %H:%M")
+            # Inbox は「今日のスキャン / 昨日の作業」を区別したい用途。
+            # `26-05-25 15:30` 形式 (西暦下 2 桁 + 月日 + 時分) で参照フォルダ
+            # 側と揃える (2026-05-25 ユーザー要望)。
+            date_str = datetime.fromtimestamp(f.mtime).strftime("%y-%m-%d %H:%M")
             date_item = QTableWidgetItem(date_str)
             date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             # ソートは mtime (float) で安定化するため UserRole に埋め込み、
@@ -419,6 +429,10 @@ class InboxPane(QWidget):
         new_unit = "KB" if chosen is act_kb else "MB"
         if new_unit != self._size_unit:
             self._size_unit = new_unit
+            # ヘッダー表示の単位もユーザー選択に追従
+            self.table.setHorizontalHeaderLabels(
+                ["Name", "拡張子", "更新", f"ｻｲｽﾞ ({new_unit})"]
+            )
             self._refresh_view()
 
     def _row_file(self, row: int) -> InboxFile | None:

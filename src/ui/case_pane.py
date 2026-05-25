@@ -72,13 +72,13 @@ ROOT_VIEW_ID = 999
 
 
 def format_size(n: int, unit: str = "KB") -> str:
-    """バイト数を KB 統一 (既定) または MB 統一でフォーマット。
+    """バイト数を 3 桁カンマ区切りで返す (単位文字は付けない、InboxPane と同方式)。
 
-    InboxPane と同じフォーマット規約。ヘッダー右クリックで KB/MB 切替。
+    ヘッダー右クリックメニューで KB/MB 切替。KB は整数、MB は小数 1 桁。
     """
     if unit == "MB":
-        return f"{n / (1024 * 1024):.1f}MB"
-    return f"{n // 1024}KB"
+        return f"{n / (1024 * 1024):,.1f}"
+    return f"{n // 1024:,}"
 
 
 def _parse_case(path: Path) -> tuple[str, str]:
@@ -561,7 +561,10 @@ class CasePane(QWidget):
         right_col.setSpacing(0)
         # _DragCaseTable: 行を別事件タブへ D&D できる (cross-case Move 起点)
         self.table = _DragCaseTable(self)
-        self.table.setHorizontalHeaderLabels(["Name", "拡張子", "更新", "サイズ"])
+        # サイズ列ヘッダーは KB/MB 切替に追従 (`ｻｲｽﾞ (KB)` ↔ `ｻｲｽﾞ (MB)`)。
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "拡張子", "更新", "ｻｲｽﾞ (KB)"]
+        )
         self.table.setIconSize(QSize(13, 13))
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
@@ -583,7 +586,8 @@ class CasePane(QWidget):
             0, QHeaderView.ResizeMode.Stretch
         )
         self.table.setColumnWidth(1, 60)    # 拡張子 (.PDF / .JPEG)
-        self.table.setColumnWidth(2, 110)   # 更新 (12pt 等幅で YYYY-MM-DD)
+        # 更新 (YY-MM-DD HH:MM、14 文字)。初期表示で省略されない幅 (Inbox と同寸)
+        self.table.setColumnWidth(2, 130)
         self.table.setColumnWidth(3, 90)    # サイズ
         self.table.cellDoubleClicked.connect(self._on_table_double_click)
         # Enter / Return: 選択行をダブルクリック相当で活性化
@@ -1019,7 +1023,9 @@ class CasePane(QWidget):
                 row, 1, _ExtItem(ext_upper, e.is_dir)
             )
 
-            date = datetime.fromtimestamp(e.mtime).strftime("%Y-%m-%d")
+            # Inbox と表示書式を揃える: `26-05-25 15:30` (西暦下 2 桁 + 時分)
+            # 2026-05-25 ユーザー要望 (両ペインで時刻まで見えると業務上便利)。
+            date = datetime.fromtimestamp(e.mtime).strftime("%y-%m-%d %H:%M")
             item_date = QTableWidgetItem(date)
             item_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 2, item_date)
@@ -1061,6 +1067,9 @@ class CasePane(QWidget):
         new_unit = "KB" if chosen is act_kb else "MB"
         if new_unit != self._size_unit:
             self._size_unit = new_unit
+            self.table.setHorizontalHeaderLabels(
+                ["Name", "拡張子", "更新", f"ｻｲｽﾞ ({new_unit})"]
+            )
             self._show_current()
 
     def _show_row_menu(self, pos) -> None:
@@ -1468,7 +1477,7 @@ class CasePane(QWidget):
             self.table.setColumnHidden(2, True)
         else:
             self.table.setColumnHidden(2, False)
-            self.table.setColumnWidth(2, min(date_avail, 110))
+            self.table.setColumnWidth(2, min(date_avail, 130))
 
     def set_inbox_file_getter(self, getter) -> None:
         """右クリック投入メニューが Inbox の選択ファイル名を問い合わせる getter。

@@ -1,14 +1,18 @@
-"""右 プレビューペイン (PDF: QPdfView / 画像: QPixmap)
+"""右 プレビューペイン (PDF: QPdfView / 画像: QPixmap / テキスト: QPlainTextEdit)
 
-ファイル選択時に show_file(path) が呼ばれ、拡張子に応じて PDF or 画像を
-プレビューする。対象外・読込失敗・未選択はメッセージ表示。
-QStackedWidget で [メッセージ / PDF / 画像] を切り替える。
+ファイル選択時に show_file(path) が呼ばれ、拡張子に応じて切り替え:
+- PDF (.pdf) → QPdfView (複数ページのページ送りバー付)
+- 画像 → QPixmap で拡縮表示
+- テキスト/JSON (.txt/.json/.k-photo 等) → QPlainTextEdit。JSON は indent=2 整形
+- それ以外 → 「対象外」メッセージ
 
-複数ページ PDF はスクロールに加え、下端のページ送りバー (◀ N/総数 ▶) で
-ページ移動できる。バーは複数ページのときだけ表示する。
+QStackedWidget で [メッセージ / PDF / 画像 / テキスト] を切り替える。
+大きいテキストは先頭 64KB のみ表示 (法律実務で何 MB のテキストはまず無いが保険)。
+文字コードは UTF-8 → CP932 → latin-1 の順にフォールバック。
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +23,7 @@ from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -28,6 +33,38 @@ from PySide6.QtWidgets import (
 from src.ui.pane_header import PaneHeader
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff"}
+
+# テキストプレビュー対象 (生 JSON / 各種ログ / メモ 等)。
+# .k-photo (k-systemz サブアプリの JSON 一時保存) も対象。
+_TEXT_EXTS = {".txt", ".log", ".md", ".csv", ".tsv", ".ini", ".cfg"}
+_JSON_EXTS = {".json", ".k-photo"}
+
+# 大きいファイルを開いた時の保護: 先頭 N バイトのみ読む
+_TEXT_PREVIEW_CAP = 64 * 1024
+
+
+def _read_text_with_fallback(p: Path, cap: int = _TEXT_PREVIEW_CAP) -> tuple[str, bool]:
+    """ファイルを bytes で読んで UTF-8 → CP932 → latin-1 の順で decode。
+
+    返り値: (テキスト, 切詰めしたか)。切詰めした場合は末尾を `…` で示す。
+    """
+    raw = p.read_bytes()
+    truncated = False
+    if len(raw) > cap:
+        raw = raw[:cap]
+        truncated = True
+    for enc in ("utf-8", "utf-8-sig", "cp932", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        # ここに来ることはほぼ無い (latin-1 は任意の byte を受け入れる)
+        text = raw.decode("latin-1", errors="replace")
+    if truncated:
+        text += "\n\n…(以降省略)…"
+    return text, truncated
 
 
 class _ImageView(QLabel):
@@ -102,6 +139,15 @@ class PreviewPane(QWidget):
         self._image_view = _ImageView()
         self._stack.addWidget(self._image_view)
 
+        # [3] テキスト / JSON (.txt/.json/.k-photo 等)
+        self._text_view = QPlainTextEdit()
+        self._text_view.setObjectName("previewText")
+        self._text_view.setReadOnly(True)
+        self._text_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # 等幅で読みやすいよう既定フォントを上書き (本体の MS Gothic 12pt 戦略は
+        # main.py 起動後に apply_bitmap_font_strategy で再付与される)
+        self._stack.addWidget(self._text_view)
+
         outer.addWidget(self._stack, stretch=1)
 
     def _build_pdf_page(self) -> QWidget:
@@ -168,9 +214,18 @@ class PreviewPane(QWidget):
             # Win 側でファイルロックが残るため、必ず close() を挟む
             self._release_pdf()
             self._show_image(p)
+        elif ext in _JSON_EXTS:
+            self._release_pdf()
+            self._image_view.set_image(QPixmap())
+            self._show_json(p)
+        elif ext in _TEXT_EXTS:
+            self._release_pdf()
+            self._image_view.set_image(QPixmap())
+            self._show_text(p)
         else:
             self._release_pdf()
             self._image_view.set_image(QPixmap())
+            self._text_view.clear()
             self._update_info(p, extra="")
             self._show_message(f"プレビュー対象外のファイル\n({ext})")
 
@@ -184,6 +239,7 @@ class PreviewPane(QWidget):
         """
         self._release_pdf()
         self._image_view.set_image(QPixmap())
+        self._text_view.clear()
         self._info_label.setText("")
         self._info_label.setToolTip("")
         self._show_message("ファイルを選択するとプレビュー表示")
@@ -237,6 +293,45 @@ class PreviewPane(QWidget):
         self._update_info(p, extra=extra)
         self._image_view.set_image(pm)
         self._stack.setCurrentWidget(self._image_view)
+
+    def _show_text(self, p: Path) -> None:
+        """テキスト (.txt/.log/.md/.csv 等) を QPlainTextEdit に表示。"""
+        try:
+            text, truncated = _read_text_with_fallback(p)
+        except OSError as e:
+            self._update_info(p, extra="読込失敗")
+            self._show_message(f"テキストを読み込めません\n{p.name}\n{e}")
+            return
+        extra = "切詰め表示" if truncated else f"{len(text):,} 文字"
+        self._update_info(p, extra=extra)
+        self._text_view.setPlainText(text)
+        self._stack.setCurrentWidget(self._text_view)
+
+    def _show_json(self, p: Path) -> None:
+        """JSON (.json/.k-photo) は indent=2 で整形して表示。
+        パースに失敗したら生テキストとして表示 (corrupt JSON 等の状況を温存)。"""
+        try:
+            raw, truncated = _read_text_with_fallback(p)
+        except OSError as e:
+            self._update_info(p, extra="読込失敗")
+            self._show_message(f"JSON を読み込めません\n{p.name}\n{e}")
+            return
+        # 切詰めしたら JSON として parse できないので raw 表示にフォールバック
+        if truncated:
+            self._update_info(p, extra="切詰め表示")
+            self._text_view.setPlainText(raw)
+            self._stack.setCurrentWidget(self._text_view)
+            return
+        try:
+            obj = json.loads(raw)
+            formatted = json.dumps(obj, ensure_ascii=False, indent=2)
+            extra = "JSON 整形済"
+        except ValueError:
+            formatted = raw
+            extra = "JSON parse 失敗 (生表示)"
+        self._update_info(p, extra=extra)
+        self._text_view.setPlainText(formatted)
+        self._stack.setCurrentWidget(self._text_view)
 
     def _show_message(self, text: str) -> None:
         self._message.setText(text)
