@@ -6,12 +6,13 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M3 / M4 / M5 完了 (2026-05-23) → M5b UX polish 完了 (2026-05-24)。次は Win 機検証 → β タグ (v0.1.0-beta.1)**
-- スタック: Python + PySide6、PyInstaller で .exe 配布
+- 現在地: **M5c 本番テスト対応 + polish 完了 (2026-05-25)。次は再度 Win 機検証 → β タグ (v0.1.0-beta.1)**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → 業務凍結級バグ + 設計修正を M5c で一括反映 → 同日 2 回目検証準備完了
+- スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
-- 配布: GitHub Releases (単一リポへ直 upload)
-- テスト: 62 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py`) 全緑
+- 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと)
+- テスト: 67 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py`) 全緑
 
 ---
 
@@ -234,7 +235,36 @@
   - **ステータスバー 2 分割** (左 = showMessage / 右 = 選択ファイル フルパス)
   - **ウインドウサイズ永続化**、Inbox/中央ファイル名列の幅同期 (ADR-18)、孫フォルダへ Inbox D&D 投入、KB/MB 切替時にソート維持、サブフォルダボタン末尾省略 (…)
   - **UI 整理**: 半角カタカナ メニュー (ﾌｧｲﾙ / ﾂｰﾙ / ﾍﾙﾌﾟ) と「参照ﾌｫﾙﾀﾞ」、タイトルバー = `K-FILE`、`<DIR>` (フォルダ行)、`.PDF` 大文字拡張子、削除ボタン (無視と分離)、「他事件へ」→ `↗` アイコン化、ダイアログは 9pt + raised 外縁 2px 内側マージン
-- **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (事件フォルダ以外も可)、PyInstaller .exe + GitHub Actions ビルド、Win 機で業務並走 → v1.0 stable
+- **M5c 本番テスト対応 + polish (✅ 2026-05-25 完了)**: 1 回目 Win 機本番テスト報告
+  (`/home/sk/デスクトップ/260525k-fileテスト結果.txt`) を受けた緊急対応。詳細 §7。主要点:
+  - **プレビューファイルロック解放**: `QPdfDocument` がファイルハンドルを保持して
+    削除/移動/リネームが失敗していた業務凍結級バグ。`PreviewPane.clear()` で
+    明示 close + 操作前 / F3 閉 / ウインドウ非アクティブ / Inbox↔参照フォルダ
+    間 focus 切替で呼ぶ (ADR-22)
+  - **タブ氏名抽出**: `R08020011文書フォルダ(田中太郎)売買` 形式の事件フォルダ
+    名から「依頼者名 + 事件名」を抜き出してタブ表示 (半角/全角括弧両対応、
+    旧スペース区切りも後方互換)
+  - **単一インスタンス + IPC (M6b)**: `QLocalServer/QLocalSocket` (`src/ipc.py`) で
+    2 つ目以降は primary にパス送信 → exit。K-SystemZ から連打しても 1 ウインドウ
+    にタブ集約 (ADR-20)
+  - **Inbox 設計転換**: ホワイトリスト撤去 → ブラックリスト方式
+    (`.tmp/.DS_Store/Thumbs.db/desktop.ini` 等のみ除外、`.k-*` は明示的に通す)。
+    フォルダも Inbox に出して Alt+0〜9/D&D/右クリックで事件サブフォルダに丸ごと
+    移動可能 (`file_ops.inject` にフォルダ分岐)。Inbox フォルダ行ダブルクリックで
+    事件タブとして開く (ADR-19)
+  - **0KB スキャン抑制**: 0 バイト & 更新 5 秒以内は書き込み中扱いで非表示。
+    `InboxWatcher` に 700ms debounce + 5.5 秒後 follow-up refresh
+  - **重複ソース dedupe**: `list_inbox_files` で resolve 済みパス重複を排除
+    (ユーザー設定で Desktop 行が 2 件並んで 2 倍表示される事故への保険)
+  - **テキスト/JSON プレビュー**: `.txt/.log/.md/.csv/.tsv/.ini/.cfg/.json/.k-photo`
+    を QPlainTextEdit で表示。JSON は indent=2 整形、64KB cap、UTF-8 → CP932 →
+    latin-1 文字コードフォールバック
+  - **更新列 = YY-MM-DD HH:MM** に統一 (両ペイン)、列幅 110 → 130
+  - **サイズ列 = カンマ区切り + ヘッダー単位** (`ｻｲｽﾞ (KB)` / `ｻｲｽﾞ (MB)` 動的切替)
+  - **K-SystemZ 連携技術対応**: ksystemz.db RO 接続と kfile.db に `PRAGMA busy_timeout=5000`、
+    起動致命例外を `%APPDATA%\k-file\error.log` に追記、PyInstaller を `--onedir` 化
+    + CI で zip 化して artifact / Release upload (ADR-21)
+- **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応 (M6a 完了)、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (M6a 完了)、PyInstaller `--onedir` + GitHub Actions ビルド (M5c 完了)、Win 機で業務並走 → v1.0 stable
   - ※フォルダ既定ハンドラの OS 乗っ取りは行わない (§15 ADR-2)。literal な「Explorer ダブルクリック→k-file」は、やるとしても Win 実機実験 → 上級者向け自己責任トグル止まり
 
 ### 確定したショートカット体系 / サブフォルダ操作 (原仕様の F1〜F6 から変更済)
@@ -484,17 +514,81 @@
 - ✅ 孫フォルダ・曾孫フォルダ等、サブフォルダボタンに割当のない深い階層への
   投入手段 (操作: 親サブに入って、孫に降りて、Inbox から drag drop)
 
+### M5c 本番テスト対応 + polish (2026-05-25 完了)
+
+1 回目 Win 機本番テスト報告 (`/home/sk/デスクトップ/260525k-fileテスト結果.txt`)
+を受けた緊急対応セッション。業務凍結級バグ + 設計修正 + 連携技術対応の三本立て。
+
+#### 業務凍結級 (削除/移動/リネーム不能の原因)
+- ✅ プレビューファイルロック解放 (ADR-22): `PreviewPane.clear()` で
+  `QPdfDocument.close()` を明示。削除/移動/リネーム/F3 閉/ウインドウ非アクティブ
+  /Inbox↔参照フォルダ間 focus 切替 で呼ぶ。`eventFilter(FocusIn)` で相手側選択も
+  `clearSelection + setCurrentCell(-1,-1)` (ユーザー要望: フォーカスが離れた
+  ペインは選択も離れる)
+- ✅ タブ氏名抽出 (`_parse_case` 拡張): `R08020011文書フォルダ(田中太郎)売買`
+  → ("R08020011", "田中太郎 売買")。半角/全角括弧両対応、旧スペース区切り形式も
+  後方互換
+- ✅ 単一インスタンス + IPC (M6b、ADR-20): `src/ipc.py` の `IpcServer` /
+  `try_send_to_primary`。2 つ目以降は QLocalSocket でパス送信 → 自分は exit、
+  primary 側で `add_case_tab` + raise/activateWindow
+
+#### Inbox 設計転換 (ADR-19)
+- ✅ ホワイトリスト撤去 → ブラックリスト方式: `INBOX_EXCLUDE_EXTENSIONS = {.tmp,
+  .part, .crdownload, .download}` / `INBOX_EXCLUDE_NAMES = {.DS_Store, Thumbs.db,
+  desktop.ini}` + ドット隠し (`.k-*` は明示通過)
+- ✅ `InboxFile.is_dir` 追加でフォルダも Inbox に出す。`<DIR>` 表示、Alt+0〜9 /
+  D&D / 右クリックで事件サブフォルダに丸ごと移動可能
+- ✅ `file_ops.inject` にフォルダ分岐 (`shutil.move` 一発、サイズ検証は省略)
+- ✅ Inbox フォルダ行ダブルクリックで `openFolderRequested` 発火 →
+  `add_case_tab` で事件タブとして開く (M6a 汎用ファイラーと整合)
+- ✅ `list_inbox_files` で resolve 済みパス重複を排除 (Desktop 行 2 件並びの
+  2 倍表示事故への保険)
+- ✅ dev デフォルト整理: Desktop 2 件 → 1 件 (本番テストで両方変えると重複事故)
+
+#### 業務上ストレス
+- ✅ 0KB スキャン抑制: `_INCOMPLETE_GRACE_SEC = 5.0`、`InboxWatcher.DEBOUNCE_MS
+  = 700` + follow-up timer 5.5 秒後で書き込み完了後の再走査
+- ✅ Office 系拡張子追加 (.docx/.xlsx/.pptx/.txt 等) ※ブラックリスト方式に
+  転換したので結果として自動的に含まれる
+- ✅ 更新列: `%y-%m-%d %H:%M` (西暦下 2 桁 + 月日 + 時分) で Inbox/参照フォルダ
+  共通フォーマット、列幅 110 → 130 (初期表示で省略されない)
+- ✅ サイズ列: `format_size` から単位文字 (KB/MB) を外し 3 桁カンマ区切り
+  (`12,345` / `12.0`)、ヘッダーラベルを `ｻｲｽﾞ (KB)` / `ｻｲｽﾞ (MB)` 動的切替
+  (半角カタカナ、KB/MB 切替メニュー追従)
+- ✅ ファイル名 tooltip: Inbox / 中央 Name セルにフル名 (拡張子込み) + Inbox は
+  出所ラベルも併記
+- ✅ テキスト/JSON プレビュー: `.txt/.log/.md/.csv/.tsv/.ini/.cfg/.json/.k-photo`
+  を QPlainTextEdit で表示。JSON は indent=2 整形、parse 失敗は生表示、64KB cap、
+  UTF-8 → UTF-8 BOM → CP932 → latin-1 文字コードフォールバック
+
+#### K-SystemZ 連携技術対応
+- ✅ SQLite `PRAGMA busy_timeout = 5000` を ksystemz.db RO 接続 + kfile.db
+  両方に設定 (K-SystemZ 側書込との競合 5 秒待ち)
+- ✅ 起動致命例外を `%APPDATA%\k-file\error.log` に追記 (`src/main.py` の
+  `_log_startup_error` ヘルパ + `if __name__ == "__main__"` の try/except)
+- ✅ PyInstaller `--onedir` 化 (ADR-21): `k-file.spec` を `EXE(exclude_binaries
+  =True) + COLLECT()` 構成へ、CI で `Compress-Archive` で `dist/k-file/` を
+  `k-file-windows.zip` に固めて artifact / Release に upload
+
+#### テスト
+- ✅ 67 件 pass (M5c 追加: 0KB 抑制 / フォルダ inject 2 件 / blacklist 1 件 /
+  `InboxFile.is_dir` 1 件 / dedupe 1 件)
+
 ---
 
 ## 8. 次にやること
 
-### M5 完了 (2026-05-23) → Win 機検証 → β タグ → M6 へ
+### M5c 完了 (2026-05-25) → 2 回目の Win 機検証 → β タグ → M6 残作業
 
-M3/M4/M5 で投入・移動・名前変更・削除・Undo・履歴・K-SystemZ 連携・設定・
-セッション復元・事件ショートカット動線まで揃った。**機能的にβ候補**。
+M5c で 1 回目 Win 機本番テスト報告 (プレビューロックで削除不能 / Inbox 2 倍表示 /
+タブ氏名空 / 単一インスタンス未対応 / 0KB スキャン / Office・JSON プレビュー欠如
+等) を一括解消。
 
-次は Win 機で実 ksystemz.db に対して動作検証 → エッジケース修正 →
-β タグ (v0.1.0-beta.1) を打って業務並走を始める。
+次は **2 回目 Win 機検証** (CI run 26402422373 の zip artifact を Win 機で取得 →
+M5c 全項目の検証 → 問題なければ β タグ v0.1.0-beta.1) で正式 prerelease 配布。
+詳細チェックリストは「M5c 検証ポイント」参照。
+
+### M3/M4/M5 完了 (2026-05-23) → 1 回目 Win 機検証 (済) → M5c 反映 (済)
 
 ### dev の足場 (M5 で正式化される仮実装)
 - 事件フォルダ: `~/k-file-test-data/事件/` を `case_pane.py` の `_DEV_DOC_ROOT`
@@ -534,15 +628,34 @@ M3/M4/M5 で投入・移動・名前変更・削除・Undo・履歴・K-SystemZ 
 - フォルダ D&D で事件タブ追加 — メインウインドウへの drop を受けて case_pane へ
 - 単体テスト — `case_repo` の検索/解決をモック db で網羅
 
-#### Phase C (Win 機): 実 DB 検証 ← **次にやること**
-- GitHub から最新 .exe DL (Actions タブの `k-file-windows` artifact)
-- **ツール → 設定…** で実 `ksystemz.db` パスを指定 (`X:\K-system\ksystemz\ksystemz.db`)
-- Inbox 監視先も実環境のパスに編集 (scan / Desktop / 作業)
-- **Ctrl+O** で業務事件 5〜10 件を順に開いて検証 (検索、タブ切替、投入、削除、Undo)
-- AB 集約運用 (「他事件へ」+ ショートカットダブルクリックでタブ切替) も実事件で検証
-- **パス区切り (`\` vs `/`)** や **日本語フォルダ名 (㈱、㊗ 等の機種依存文字)**、**`folder_path` カラムの実値**、**case_code の前方一致時の衝突** (R060200042 と R0602000420 が並ぶ事務所はほぼ無いが念のため) などのエッジケース発見 → 修正 push → 本機 pull
-- Win .lnk 解決 (PowerShell COM) が実環境でちゃんと動くか確認 (`infra/folder_shortcut.resolve_shortcut`)
-- 一通り動けば **β タグ** (v0.1.0-beta.1) → Releases で prerelease として配布
+#### Phase C (Win 機): 実 DB 検証 (1 回目 ✅ 2026-05-25 / 2 回目 ← 次にやること)
+
+**1 回目 (2026-05-25)** の検出事項は M5c で全て反映済:
+- 削除/移動/リネーム不能 (PDF プレビューロック) → ADR-22
+- タブ氏名表示が空 (実環境の命名規則対応漏れ) → `_parse_case` 拡張
+- K-SystemZ から呼ぶたびウインドウ増殖 → ADR-20 (M6b 単一インスタンス)
+- 0KB スキャン表示 → 5 秒猶予 + debounce
+- Office/メモ帳ファイルが Inbox に出ない → ホワイトリスト撤去 (ADR-19)
+- `.k-photo` 等サブアプリ JSON 非表示 → ブラックリスト方式 + プレビュー対応
+- フォーカス周りの選択残留 → Tab/click で相手選択クリア
+- Desktop 2 件設定で 2 倍表示事故 → dev デフォルト整理 + dedupe 保険
+
+**2 回目 (← 次)**: CI run 26402422373 の `k-file-windows` zip を Win 機で取得
+し、M5c チェックリストを実環境で再検証:
+- `.k-photo` ファイルを Inbox / 中央テーブル で確認 → 整形 JSON プレビュー
+- デスクトップに作ったフォルダを Alt+0〜9 で事件サブフォルダに丸ごと移動
+- K-SystemZ から「フォルダを開く」連打 → タブが増えていく (ウインドウ増えない)
+- 実 ksystemz.db で `office_info.kfile_exe_path` を新 .exe パスに更新、
+  `--onedir` の zip 展開先絶対パスを指す
+- 業務並走で 1〜2 日使ってみて致命的な引っかかりが無いか確認
+- **パス区切り (`\` vs `/`)** や **日本語フォルダ名 (㈱、㊗ 等の機種依存文字)**、
+  **`folder_path` カラムの実値**、**case_code の前方一致時の衝突** (R060200042 と
+  R0602000420 が並ぶ事務所はほぼ無いが念のため) などのエッジケース
+- Win .lnk 解決 (PowerShell COM) が実環境でちゃんと動くか (`infra/folder_shortcut.resolve_shortcut`)
+- 一通り動けば **β タグ** (v0.1.0-beta.1) → Releases で prerelease 配布
+
+**並行作業** (K-SystemZ 側): M6b 単一インスタンスが完成したので、K-SystemZ 側の
+「k-file.exe プロセス重複チェック」は撤去可能 (連携実装者に連絡が要る)。
 
 ### 着手前メモ
 - Win .exe ビルドで QtPdf モジュール/プラグインの同梱を確認 (`k-file.spec` / CI)
@@ -799,6 +912,35 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   `font-family` が再適用されて strategy が失われるため、生成直後に
   `apply_bitmap_font_strategy(self)` を呼ぶこと。これを忘れると「最初は
   ビットマップ MS Gothic、タブ切替したら滑らかなベクトル」というちぐはぐが発生する。
+
+### ADR-19: Inbox は「監視先フォルダの中身をそのまま見せる」(2026-05-25)
+- **経緯**: 初期設計では Inbox は `INBOX_EXTENSIONS = {.pdf, .jpg, ..}` のホワイトリスト方式で PDF + 画像のみ表示していた。本番テスト (2026-05-25) で「Word/メモ帳保存ファイルが拾えない」「`.k-photo` 等 k-systemz サブアプリ生成 JSON が見えないと業務にならない」「デスクトップに作った作業フォルダを事件サブフォルダに運びたい」要望が同時発生。ホワイトリストを拡張し続けても未知の業務拡張子が必ず取りこぼされる。
+- **決定**: ホワイトリスト撤去 → **ブラックリスト方式** に転換 (`INBOX_EXCLUDE_EXTENSIONS = {.tmp, .part, ..}`, `INBOX_EXCLUDE_NAMES = {Thumbs.db, .DS_Store, desktop.ini}`)。ドット隠しファイルも原則隠すが `.k-*` 系は k-systemz 連携ファイルなので **明示的に通す**。**フォルダも Inbox に出す** (`InboxFile.is_dir` 追加、サイズ列 `<DIR>` 表示)。
+- **副次**: `file_ops.inject` をフォルダ対応に拡張 (`shutil.move` 一発、サイズ検証は省略 = N ファイル byte-by-byte 検証は重く UX 劣化、複合機書き込みタイミング問題もファイル限定)。Inbox フォルダ行ダブルクリックで `add_case_tab` 経由で事件タブとして開く (M6a 汎用ファイラーと整合)。
+- **理由**: 業務の現実 (法律実務家がデスクトップ作業フォルダ + サブアプリ JSON + Office ファイル を扱う) に Inbox を寄せる方が「k-file 内で完結」の理念に近い。ノイズ (`Thumbs.db` 等) はブラックリストで除外、ドット隠しは原則オフ + `.k-*` だけ例外で実用性と清潔さを両立。
+
+### ADR-20: 単一インスタンス + IPC (M6b、2026-05-25)
+- **経緯**: K-SystemZ から「フォルダを開く」を呼ぶたびに `subprocess.Popen(["k-file.exe", path])` で **別ウインドウが生まれる** → 業務的に使い物にならない (1 回目本番テスト報告)。
+- **検討**: (a) K-SystemZ 側で `psutil` でプロセス重複検出 (実装済だが「呼ばない」だけで集約はできない)、(b) k-file 側で `QSharedMemory` + 単純なロックファイル (パス送信ができない)、(c) **`QLocalServer` / `QLocalSocket` で IPC** (送信できる)。
+- **決定**: (c) を採用。`src/ipc.py` に `IpcServer` / `try_send_to_primary` を実装。secondary プロセスは起動時に primary に CLI 引数 (フォルダパス群) を改行区切り UTF-8 で送って exit。primary は受信後 `add_case_tab` でタブ追加 + ウインドウを raise/activateWindow。
+- **副次**: K-SystemZ 側の「k-file.exe プロセス重複検出」は M6b 完了後 撤去可能 (連携設計の依頼事項)。
+- **理由**: Qt 標準で Win/Linux/Mac 透過。Win では名前付きパイプ、Unix では `/tmp` ソケット。プロトコルキーは `k-file-instance-v1` で将来 schema 変更時に旧 server と隔離。
+
+### ADR-21: PyInstaller `--onedir` + zip 配布 (2026-05-25)
+- **経緯**: `--onefile` は起動毎に `%TEMP%` への展開コスト (3〜10 秒) があり、K-SystemZ から繰り返し起動する運用では業務リズムを壊す。
+- **決定**: `k-file.spec` を `EXE(exclude_binaries=True) + COLLECT()` 構成に切替。CI で `dist/k-file/` フォルダ全体を `Compress-Archive` で zip 化、artifact / Release に `k-file-windows.zip` として upload。ユーザーは zip を任意の場所 (例: `C:\Apps\k-file\`) に展開し、中の `k-file.exe` を実行。
+- **副次**: 配布物の運用が「単一 .exe 配布」→「フォルダごと配布」に変わる。配布ファイル数は増えるが、Win 業界の標準的な配置 (Program Files 風) なので問題なし。インストーラ (Inno Setup) が欲しくなれば後で別途追加可能。
+- **理由**: 起動コスト改善 (3〜10 秒 → 1 秒程度) は業務並走の体感に直結。`--onefile` の唯一の利点 (単一ファイル配布) は K-SystemZ 連携で `office_info.kfile_exe_path` を 1 行設定するだけなので失っても痛くない。
+
+### ADR-22: プレビューファイルロック解放を「操作前 / 状態遷移時」に分散 (2026-05-25)
+- **経緯**: `QPdfDocument.load(path)` は Win 上で **ファイルハンドルを保持し続ける** ため、PDF を選択した状態のままだと send2trash / shutil.move / `Path.rename` が「使用中」エラーで失敗する。1 回目本番テストで「選択ファイルが削除/移動/リネームできない (自分が自分を掴んでいる)」として最も致命的な業務凍結級バグ。
+- **決定**: `PreviewPane.clear()` で `QPdfDocument.close()` を明示呼出。以下の状態遷移時に必ず呼ぶ:
+  1. 削除 / 移動 (inject/cross-case Move/`<<`) / リネーム 操作の直前
+  2. F3 でプレビューを隠す時 (`_toggle_preview`)
+  3. ウインドウが非アクティブになった瞬間 (`changeEvent`, `ActivationChange` → `!isActiveWindow()`)
+  4. Inbox ↔ 中央テーブル の focus 切替 (Tab / マウスクリック、`eventFilter` で `FocusIn` を捕捉)
+- **副次**: Inbox ↔ 中央テーブル間の focus 移動で相手側選択を `clearSelection` + `setCurrentCell(-1, -1)` する設計と一体 (= フォーカスが離れたペインは選択も離れる、ユーザー要望)。
+- **理由**: 「常時 close」だとプレビュー継続が破綻するし、「ユーザー操作ごとに毎回 close」だとリスト操作のレスポンスが落ちる。状態遷移の境界 (操作直前 / 隠す瞬間 / フォーカス離脱) だけで close すれば「見ている間はロック、離れた瞬間に解放」という Win Explorer に近い直感的な振舞いになる。
 
 ### ADR-18: Inbox 幅 ≒ 中央ファイル名列幅 を resize の度に強制計算 (2026-05-24)
 - **経緯**: 旧コードでは splitter に `setStretchFactor(0,1)(1,2)(2,2)` を設定して
