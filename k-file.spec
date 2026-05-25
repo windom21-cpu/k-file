@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec for k-file
-# 配布形態: --onefile (β 配布 / テスター用、stable は --onedir + Inno Setup 予定)
+# 配布形態: --onedir (β/stable 共通) — K-SystemZ から繰り返し起動した時の
+# --onefile 展開コスト (3〜10 秒) を回避するため、2026-05-25 連携検討で
+# --onedir に切替。配布物は `dist/k-file/` フォルダごと (zip で頒布)。
 
 block_cipher = None
 
@@ -29,10 +31,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,   # ← --onedir: bin/datas は COLLECT() に回す
     name='k-file',
     debug=False,
     bootloader_ignore_signals=False,
@@ -47,4 +47,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='resources/icons/favicon.ico',
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='k-file',           # → dist/k-file/ に展開される
 )

@@ -78,6 +78,9 @@ class KFileDB:
         # autocommit (isolation_level=None): k-file の用途は単純なため
         self._conn = sqlite3.connect(str(self.path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        # 単独プロセス前提だが、複数 instance 起動の過渡期 (M6b IPC 切替前等)
+        # に備えて busy_timeout を設定 (ksystemz.db と同じ運用基準)。
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
 
     # ───────── ignored_files (Inbox の「無視」フラグ) ─────────

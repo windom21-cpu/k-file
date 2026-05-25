@@ -71,15 +71,21 @@ def resolve_collision(dst_dir: Path, name: str) -> tuple[Path, bool]:
 def inject(src: Path, dst_dir: Path, new_name: str | None = None) -> OpResult:
     """Inbox → 事件サブフォルダ投入。
 
-    手順: 1) dst_dir 確保  2) 衝突回避で最終 dst パス確定
-          3) shutil.copy2 で属性込みコピー  4) サイズ検証
-          5) 元 src を unlink。途中失敗時は元が残るため再操作可能。
+    ファイル: 1) dst_dir 確保  2) 衝突回避で最終 dst パス確定
+             3) shutil.copy2 で属性込みコピー  4) サイズ検証
+             5) 元 src を unlink。途中失敗時は元が残るため再操作可能。
+
+    フォルダ (2026-05-25 追加): デスクトップに作った作業フォルダ等を事件サブ
+    フォルダに丸ごと運ぶ。サイズ検証は実施せず shutil.move 一発で移動する
+    (フォルダ配下の N ファイル全てを byte-by-byte 検証するのは重く、複合機の
+    スキャン PDF とは違って書き込み完了タイミングの心配もないため)。
     """
     src = Path(src)
     dst_dir = Path(dst_dir)
     original_name = src.name
 
-    if not src.is_file():
+    is_folder = src.is_dir() and not src.is_symlink()
+    if not (src.is_file() or is_folder):
         return OpResult(
             False, "inject", src, None, original_name, original_name, False,
             error=f"投入元が見つかりません: {src}",
@@ -101,6 +107,19 @@ def inject(src: Path, dst_dir: Path, new_name: str | None = None) -> OpResult:
         )
 
     dst_path, collided = resolve_collision(dst_dir, name)
+
+    if is_folder:
+        # フォルダはコピー検証を省略して shutil.move 一発 (cross-case Move と同方式)
+        try:
+            shutil.move(str(src), str(dst_path))
+        except OSError as e:
+            return OpResult(
+                False, "inject", src, None, name, original_name, collided,
+                error=f"フォルダ投入に失敗しました: {e}",
+            )
+        return OpResult(
+            True, "inject", src, dst_path, dst_path.name, original_name, collided,
+        )
 
     try:
         shutil.copy2(str(src), str(dst_path))

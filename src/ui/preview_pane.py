@@ -153,22 +153,48 @@ class PreviewPane(QWidget):
     def show_file(self, path: str) -> None:
         """選択されたファイルをプレビュー表示する。空文字なら未選択表示。"""
         if not path:
-            self._info_label.setText("")
-            self._show_message("ファイルを選択するとプレビュー表示")
+            self.clear()
             return
         p = Path(path)
         if not p.is_file():
-            self._info_label.setText("")
+            self.clear()
             self._show_message("ファイルが見つかりません")
             return
         ext = p.suffix.lower()
         if ext == ".pdf":
             self._show_pdf(p)
         elif ext in _IMAGE_EXTS:
+            # 直前に PDF を見ていた場合は document を解放してからでないと
+            # Win 側でファイルロックが残るため、必ず close() を挟む
+            self._release_pdf()
             self._show_image(p)
         else:
+            self._release_pdf()
+            self._image_view.set_image(QPixmap())
             self._update_info(p, extra="")
             self._show_message(f"プレビュー対象外のファイル\n({ext})")
+
+    def clear(self) -> None:
+        """プレビューを完全に閉じる: PDF document を解放してファイルロックを外し、
+        画像 pixmap も破棄して、上部情報行とメッセージを初期状態に戻す。
+
+        Win では QPdfDocument が load 後ファイルハンドルを保持し続けるため、
+        削除/移動/リネーム前に必ずこれを呼ぶこと (呼ばないと「自分が掴んでいる」
+        エラーになる)。F3 で隠す時・ウインドウ非アクティブ時にも呼ぶ。
+        """
+        self._release_pdf()
+        self._image_view.set_image(QPixmap())
+        self._info_label.setText("")
+        self._info_label.setToolTip("")
+        self._show_message("ファイルを選択するとプレビュー表示")
+
+    def _release_pdf(self) -> None:
+        """QPdfDocument を確実に閉じてファイルハンドルを解放する。"""
+        try:
+            if self._pdf_doc.status() != QPdfDocument.Status.Null:
+                self._pdf_doc.close()
+        except RuntimeError:
+            pass  # 既に解放されている等
 
     def _update_info(self, p: Path, extra: str = "") -> None:
         """上部固定ヘッダーをファイル情報で更新。

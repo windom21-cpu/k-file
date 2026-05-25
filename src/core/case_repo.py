@@ -42,13 +42,19 @@ _ACTIVE_WHERE = (
 
 
 def _ro_connect(path: Path) -> sqlite3.Connection:
-    """sqlite3 を read-only URI で開く (Dropbox 同期下の書込事故防止)。"""
+    """sqlite3 を read-only URI で開く (Dropbox 同期下の書込事故防止)。
+
+    K-SystemZ 側が write 中だと SQLITE_BUSY が瞬間的に発生するので
+    busy_timeout=5000ms を設定して合計 5 秒間ロック解放を待つ
+    (K-SystemZ 側も同じ値を採用済み・2026-05-25 連携実装)。
+    """
     if not path.is_file():
         raise FileNotFoundError(f"ksystemz.db が見つかりません: {path}")
     # `file:` URI + mode=ro。同名ファイル末尾の `?` は URI 解釈の問題を避けるため
     # as_posix() でなく str() で渡し、Windows のドライブレターパスも素直に通す。
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

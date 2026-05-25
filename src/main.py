@@ -12,14 +12,38 @@ PyInstaller --onefile で配布されたときは sys._MEIPASS から resources 
 """
 from __future__ import annotations
 
+import datetime
 import sys
+import traceback
 from pathlib import Path
 
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QToolTip
 
+from src.infra.kfile_db import app_data_dir
+from src.ipc import IpcServer, try_send_to_primary
 from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.main_window import MainWindow
+
+
+def _log_startup_error(exc: BaseException) -> None:
+    """起動中に致命的な例外が出た時、APPDATA\\k-file\\error.log に追記する。
+
+    K-SystemZ 側からは「.exe を起動したが何も出ない」状態が見えないため、
+    ユーザー (法律実務家) が自分でログを開いて状況を確認できるようにする
+    (連携設計の依頼事項 2026-05-25)。書き込みすら失敗しても黙って諦める。
+    """
+    try:
+        log_dir = app_data_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "error.log"
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {datetime.datetime.now().isoformat()} ===\n")
+            traceback.print_exception(
+                type(exc), exc, exc.__traceback__, file=fh
+            )
+    except Exception:
+        pass
 
 
 def _base_path() -> Path:
@@ -82,11 +106,45 @@ def main() -> int:
     app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
     initial_paths = parse_initial_paths(sys.argv)
+
+    # 単一インスタンス + IPC (M6b): 既存 primary プロセスがあればそこへ
+    # パスを送って自分は終了する。K-SystemZ から「フォルダを開く」を連打
+    # しても 1 つの k-file ウインドウにタブが集約される。
+    if try_send_to_primary(initial_paths):
+        return 0
+
     window = MainWindow(initial_paths=initial_paths)
     window.show()
     apply_bitmap_font_strategy(window)
+
+    # primary 側として LocalServer を立ち上げ、後発プロセスからのパス送信を待つ
+    def _open_paths_from_ipc(paths: list[Path]) -> None:
+        opened = 0
+        for p in paths:
+            try:
+                if p.is_dir():
+                    window.case_pane.add_case_tab(p)
+                    opened += 1
+            except OSError:
+                continue
+        # 後発プロセスが届いた合図として常にウインドウを前面に出す
+        if window.isMinimized():
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        if opened:
+            window.statusBar().showMessage(
+                f"K-SystemZ 等から {opened} 件のフォルダを受信", 4000
+            )
+
+    window._ipc_server = IpcServer(_open_paths_from_ipc, parent=window)
     return app.exec()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BaseException as e:
+        # 起動経路 (main() 内 / Qt import 等) で発生した致命例外を error.log へ
+        _log_startup_error(e)
+        raise

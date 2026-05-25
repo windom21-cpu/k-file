@@ -125,6 +125,9 @@ class InboxPane(QWidget):
     fileSelected = Signal(str)   # 選択ファイルのパス (プレビュー用、未選択は "")
     # Del キーで削除要求 (MainWindow が file_ops.trash + 履歴記録)
     deleteRequested = Signal(str)
+    # Inbox に並んだフォルダ行のダブルクリック / Enter → 事件タブとして開く
+    # (M6a 汎用ファイラー化と整合。k-file 内完結でデスクトップの作業フォルダを扱える)
+    openFolderRequested = Signal(str)
 
     def __init__(
         self,
@@ -176,7 +179,7 @@ class InboxPane(QWidget):
             0, QHeaderView.ResizeMode.Stretch
         )
         self.table.setColumnWidth(1, 60)    # 拡張子 (.PDF / .JPEG)
-        self.table.setColumnWidth(2, 110)   # 更新 (12pt 等幅で YYYY-MM-DD)
+        self.table.setColumnWidth(2, 110)   # 更新 (MM-DD HH:MM、時刻まで表示)
         self.table.setColumnWidth(3, 90)    # サイズ
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         # 複数選択可能 (Shift で範囲 / Ctrl で個別 toggle)。投入 / 削除 / D&D は
@@ -290,24 +293,45 @@ class InboxPane(QWidget):
         for r, f in enumerate(files):
             ignored = str(f.path) in self._ignored
 
-            # Name は stem のみ、拡張子は別列 (ドット付き大文字、例: .PDF .JPG)。
-            # Inbox は PDF + 画像 (jpg/png/tiff) 等の絞り込み済なので原則 ext は付く。
-            # Path.suffix は既に "." を含むため upper() のみ。点なしは "" のまま。
-            ext_upper = f.path.suffix.upper()
-            name_item = QTableWidgetItem(f.path.stem)
+            # Name は stem のみ、拡張子は別列 (例: .PDF .JPG)。
+            # フォルダは name 全体を Name 列に出し、拡張子列は空にする。
+            if f.is_dir:
+                stem_display = f.path.name
+                ext_upper = ""
+            else:
+                stem_display = f.path.stem
+                ext_upper = f.path.suffix.upper()
+            name_item = QTableWidgetItem(stem_display)
             # UserRole にパス文字列を埋め込む (ソートで行順が変わっても照合できる)
             name_item.setData(Qt.ItemDataRole.UserRole, str(f.path))
+            # 長いファイル名がセル幅で省略表示された時のため、ホバーでフル名を見せる
+            # (本番テスト要望 2026-05-25)。拡張子込みのフル名 + 出所ラベルを併記。
+            name_item.setToolTip(f"{f.name}  ({f.source})")
 
             ext_item = QTableWidgetItem(ext_upper)
             ext_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
 
-            date_str = datetime.fromtimestamp(f.mtime).strftime("%Y-%m-%d")
+            # Inbox は「今日のスキャン / 昨日の作業」を区別したい用途なので、
+            # 年は省いて月日 + 時分を表示する (本番テスト要望 2026-05-25)。
+            # 12月→1月の年またぎで文字列ソート順が崩れるが、Inbox は cutoff_days
+            # で短期間に絞っているので実害なし。
+            date_str = datetime.fromtimestamp(f.mtime).strftime("%m-%d %H:%M")
             date_item = QTableWidgetItem(date_str)
             date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # ソートは mtime (float) で安定化するため UserRole に埋め込み、
+            # 通常表示 (文字列) との二段構えで使う (ヘッダー左クリックで安定ソート)。
+            date_item.setData(Qt.ItemDataRole.UserRole, f.mtime)
 
-            size_item = _SizeCell(f.size, self._size_unit)
+            # フォルダ行はサイズ列を `<DIR>` 表示 (case_pane と同じ DOS ファイラー風)
+            if f.is_dir:
+                size_item = QTableWidgetItem("<DIR>")
+                size_item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
+            else:
+                size_item = _SizeCell(f.size, self._size_unit)
 
             if ignored:  # 無視ファイル (表示モード時) は 4 列ともグレー
                 name_item.setForeground(_IGNORED_FG)
@@ -358,10 +382,16 @@ class InboxPane(QWidget):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _open_selected_with_default_app(self, *_args) -> None:
-        """Inbox ダブルクリック / Enter キー: 選択ファイルを OS 既定アプリで開く。
+        """Inbox ダブルクリック / Enter キー:
+          - ファイル: OS 既定アプリで開く
+          - フォルダ: 事件タブとして開く (k-file 内完結。M6a 汎用ファイラー)
         複数選択時は先頭のみ (誤って大量起動するのを避ける)。"""
         f = self._row_file(self.table.currentRow())
-        if f is not None:
+        if f is None:
+            return
+        if f.is_dir:
+            self.openFolderRequested.emit(str(f.path))
+        else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(f.path)))
 
     def _copy_to_clipboard(self, text: str) -> None:

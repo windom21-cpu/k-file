@@ -1,9 +1,12 @@
 name: build
 
 # トリガー:
-#  - main への push: .exe を artifact として 90日保存 (Actions タブから DL)
-#  - v* タグ: Release を作成し .exe を assets に upload (β は prerelease)
+#  - main への push: 配布フォルダ (dist/k-file/) を zip 化して artifact 90日保存
+#  - v* タグ: Release を作成し zip を assets に upload (β は prerelease)
 #  - 手動実行 (workflow_dispatch) も可
+#
+# 配布形態 (2026-05-25 〜): PyInstaller --onedir + zip 配布
+#   --onefile では K-SystemZ から呼ぶたび 3〜10 秒の展開コストがかかるため。
 
 on:
   push:
@@ -33,14 +36,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build .exe
+      - name: Build (--onedir)
         run: pyinstaller --noconfirm k-file.spec
+
+      - name: Pack distribution folder
+        # dist/k-file/ フォルダごと zip 化 (展開先で k-file.exe を実行)
+        run: |
+          Compress-Archive -Path dist/k-file/* -DestinationPath dist/k-file-windows.zip -Force
+        shell: pwsh
 
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v4
         with:
           name: k-file-windows
-          path: dist/k-file.exe
+          path: dist/k-file-windows.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -48,5 +57,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/k-file.exe
+          files: dist/k-file-windows.zip
           prerelease: ${{ contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}

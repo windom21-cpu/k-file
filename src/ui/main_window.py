@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -262,9 +262,16 @@ class MainWindow(QMainWindow):
         # ファイル選択 → 右ペインでプレビュー
         self.inbox_pane.fileSelected.connect(self.preview_pane.show_file)
         self.case_pane.fileSelected.connect(self.preview_pane.show_file)
+        # Inbox に並んだフォルダ行のダブルクリック → 事件タブで開く
+        self.inbox_pane.openFolderRequested.connect(self._open_inbox_folder)
         # Tab / Shift+Tab で Inbox ↔ 中央ファイル一覧の往復
         self.inbox_pane.table.tabPressed.connect(self._focus_case_table)
         self.case_pane.table.tabPressed.connect(self._focus_inbox_table)
+        # クリック等でフォーカスが Inbox ↔ 中央 を切り替わった瞬間に、相手側の
+        # 選択を解除する (ユーザー要望: 「フォーカスが離れたら選択も離れる」)。
+        # preview pane や他の widget へのフォーカス移動には反応しない。
+        self.inbox_pane.table.installEventFilter(self)
+        self.case_pane.table.installEventFilter(self)
 
 
     def _build_menus(self, mb: QMenuBar) -> None:
@@ -362,6 +369,8 @@ class MainWindow(QMainWindow):
                 f"デスクトップが見つかりません: {desktop}", 5000
             )
             return
+        # PDF プレビューが掴んでいると move 失敗するため明示クリア
+        self.preview_pane.clear()
         result = file_ops.move(path, desktop)
         if not result.ok:
             self.statusBar().showMessage(
@@ -436,14 +445,22 @@ class MainWindow(QMainWindow):
             self._show_history()
 
     def _focus_inbox_table(self) -> None:
-        """Tab from case → Inbox に focus 移動 + 未選択なら先頭行を選択。"""
+        """Tab from case → Inbox に focus 移動。元ペインの選択は解除して
+        プレビューも閉じる (ユーザー要望: 「フォーカスが離れたら選択も離れる」)。"""
+        self.case_pane.table.clearSelection()
+        self.case_pane.table.setCurrentCell(-1, -1)
+        self.preview_pane.clear()
         t = self.inbox_pane.table
         t.setFocus()
         if t.currentRow() < 0 and t.rowCount() > 0:
             t.setCurrentCell(0, 0)
 
     def _focus_case_table(self) -> None:
-        """Tab from Inbox → 中央テーブルに focus 移動 + 未選択なら先頭行を選択。"""
+        """Tab from Inbox → 中央テーブルに focus 移動。元ペインの選択は解除して
+        プレビューも閉じる (ユーザー要望: 「フォーカスが離れたら選択も離れる」)。"""
+        self.inbox_pane.table.clearSelection()
+        self.inbox_pane.table.setCurrentCell(-1, -1)
+        self.preview_pane.clear()
         t = self.case_pane.table
         t.setFocus()
         if t.currentRow() < 0 and t.rowCount() > 0:
@@ -521,6 +538,12 @@ class MainWindow(QMainWindow):
         self.case_pane.add_case_tab(target)
         code, _ = _parse_case(target)
         self.statusBar().showMessage(f"事件ショートカットを開きました: {code}", 3000)
+
+    def _open_inbox_folder(self, path_str: str) -> None:
+        """Inbox のフォルダ行ダブルクリック → 事件タブで開く (汎用ファイラー動線)。"""
+        p = Path(path_str)
+        if p.is_dir():
+            self.case_pane.add_case_tab(p)
 
     def _open_initial_paths(self) -> None:
         """CLI 引数で渡されたフォルダを順次タブに追加 (K-SystemZ 連携用)。
@@ -684,9 +707,39 @@ class MainWindow(QMainWindow):
             self._refresh_undo_state()
 
     def _toggle_preview(self) -> None:
-        """F3 / bar の F3 クリック: プレビュー開閉 (1:1 ↔ 1:2:2)。"""
+        """F3 / bar の F3 クリック: プレビュー開閉 (1:1 ↔ 1:2:2)。
+
+        閉じる時は QPdfDocument を明示的に close してファイルロックを解放
+        (見えなくなっても document を保持していると Win で削除/移動が
+        失敗する。バグ報告: 2026-05-25 本番テスト)。
+        """
         self._preview_visible = not self._preview_visible
+        if not self._preview_visible:
+            self.preview_pane.clear()
         self._apply_pane_layout()
+
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802 (Qt override)
+        """Inbox / 中央テーブル の focus 切替で互いの選択を解除する。"""
+        if e.type() == QEvent.Type.FocusIn:
+            if obj is self.inbox_pane.table:
+                self.case_pane.table.clearSelection()
+                self.case_pane.table.setCurrentCell(-1, -1)
+            elif obj is self.case_pane.table:
+                self.inbox_pane.table.clearSelection()
+                self.inbox_pane.table.setCurrentCell(-1, -1)
+        return super().eventFilter(obj, e)
+
+    def changeEvent(self, e) -> None:
+        """ウインドウのアクティブ状態が変わった時に preview を閉じる。
+
+        ユーザーが別アプリ (ブラウザ等) に切り替えた瞬間に PDF ハンドルが
+        解放されるので、Explorer から直接そのファイルを削除/移動できる。
+        次にアクティブに戻ってきても、現選択行で再 load されるだけで支障なし。
+        """
+        super().changeEvent(e)
+        if e.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            if hasattr(self, "preview_pane"):
+                self.preview_pane.clear()
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -847,6 +900,10 @@ class MainWindow(QMainWindow):
         ステータスメッセージを集計して 1 行で報告 (UX 簡潔化)。"""
         if not srcs:
             return
+        # inject = Copy → 検証 → 元削除。元削除フェーズで Win のファイルロック
+        # (PDF プレビューが掴んでいる) があると unlink が失敗するため、開始前に
+        # preview を強制クローズしてハンドルを解放する。
+        self.preview_pane.clear()
         code, _ = self.case_pane.current_case()
         ok_n = 0
         collided_n = 0
@@ -954,6 +1011,8 @@ class MainWindow(QMainWindow):
         case_paths = self.case_pane._case_paths
         if not 0 <= target_idx < len(case_paths):
             return
+        # Move は shutil.move なので Win 側でファイルロックがあると失敗する
+        self.preview_pane.clear()
         target_case_root = case_paths[target_idx]
         src_case_root = self.case_pane.current_case_path()
         if src_case_root is not None and target_case_root == src_case_root:
@@ -1043,6 +1102,8 @@ class MainWindow(QMainWindow):
             return
         new_name = dlg.chosen_name()
 
+        # Win では QPdfDocument がファイルを掴んだままだと rename も失敗する
+        self.preview_pane.clear()
         result = file_ops.rename(path, new_name)
         if not result.ok:
             self.statusBar().showMessage(f"名前変更失敗: {result.error}", 6000)
@@ -1082,6 +1143,8 @@ class MainWindow(QMainWindow):
     def _on_case_delete(self, path_str: str) -> None:
         """中央ペインから Del / − ボタン経由の削除要求。"""
         path = Path(path_str)
+        # Win 側で PDF プレビューがファイルを掴んだままだと send2trash が失敗する
+        self.preview_pane.clear()
         result = file_ops.trash(path)
         if not result.ok:
             self.statusBar().showMessage(f"削除失敗: {result.error}", 6000)
@@ -1118,6 +1181,8 @@ class MainWindow(QMainWindow):
         sf = self.inbox_pane.selected_file()
         if sf is not None and str(sf.path) == path_str:
             source_label = sf.source
+        # PDF プレビューが掴んでいる状態だと Win で削除失敗するため明示クリア
+        self.preview_pane.clear()
         result = file_ops.trash(path)
         if not result.ok:
             self.statusBar().showMessage(f"削除失敗: {result.error}", 6000)
@@ -1159,6 +1224,8 @@ class MainWindow(QMainWindow):
             return
         new_name = dlg.chosen_name()
 
+        # Inbox 側もプレビューロック解除
+        self.preview_pane.clear()
         result = file_ops.rename(f.path, new_name)
         if not result.ok:
             self.statusBar().showMessage(f"名前変更失敗: {result.error}", 6000)

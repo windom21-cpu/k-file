@@ -82,11 +82,46 @@ def format_size(n: int, unit: str = "KB") -> str:
 
 
 def _parse_case(path: Path) -> tuple[str, str]:
-    """事件フォルダ名 'R060200042 山田太郎 損害賠償' → (code, name)。"""
-    parts = path.name.split(" ", 1)
+    """事件フォルダ名 → (case_code, タブ表示用ラベル)。
+
+    対応する命名規則 (本番運用 2026-05 時点):
+      1) `R08020011文書フォルダ(田中太郎)売買` (実環境の現行ルール)
+         → ('R08020011', '田中太郎 売買')
+      2) `R060200042 山田太郎 損害賠償` (旧/モック形式・スペース区切り)
+         → ('R060200042', '山田太郎 損害賠償')
+      3) 上記以外 → 名前全体を code、表示名は空
+
+    タブ表示は「依頼者名 + 事件名」優先。case_code は K-SystemZ 連携キーなので
+    タブ表示には出さない (タブのツールチップで案内、case_pane.add_case_tab 側)。
+    括弧は半角 / 全角の両方を許容する (`(...)` / `（...）`)。
+    """
+    name = path.name
+    if "文書フォルダ" in name:
+        idx = name.index("文書フォルダ")
+        code = name[:idx]
+        rest = name[idx + len("文書フォルダ"):]
+        client = ""
+        case_name = ""
+        if rest[:1] in ("(", "（"):
+            close_ch = ")" if rest[0] == "(" else "）"
+            close_idx = rest.find(close_ch)
+            if close_idx > 0:
+                client = rest[1:close_idx].strip()
+                case_name = rest[close_idx + 1:].strip()
+            else:
+                case_name = rest.strip()
+        else:
+            case_name = rest.strip()
+        if client and case_name:
+            display = f"{client} {case_name}"
+        else:
+            display = client or case_name
+        return code, display
+    # 旧形式 (モック / Linux dev): スペース区切り
+    parts = name.split(" ", 1)
     if len(parts) == 2:
         return parts[0], parts[1]
-    return path.name, ""
+    return name, ""
 
 
 class _NameItem(QTableWidgetItem):
@@ -972,6 +1007,12 @@ class CasePane(QWidget):
                 stem_display, e.is_dir, e.path,
                 is_link=e.is_link, ext=ext_upper,
             )
+            # 長いファイル名はセル幅で省略表示されるので、ホバーでフル名を表示
+            # (本番テスト要望 2026-05-25)。フォルダ/ショートカット行はフォルダ名のみ。
+            if e.is_dir or e.is_link:
+                name_item.setToolTip(e.name)
+            else:
+                name_item.setToolTip(e.path.name)
             # アイコンは表示しない (DOS ファイラー風、サイズ列の <DIR> でフォルダ判別)
             self.table.setItem(row, 0, name_item)
             self.table.setItem(

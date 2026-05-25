@@ -132,6 +132,49 @@ def test_inject_bad_name(tmp_path: Path):
     assert src.exists()                            # 元は残る
 
 
+def test_inject_folder_moves_recursively(tmp_path: Path):
+    """フォルダ inject: デスクトップに作った作業フォルダごと事件サブフォルダへ移動。
+
+    2026-05-25 追加。k-systemz サブアプリ生成物や作業中フォルダを Inbox 経由で
+    丸ごと運ぶ用途。フォルダ配下のファイル構造はそのまま保持される。
+    """
+    src_dir = tmp_path / "案件メモ"
+    src_dir.mkdir()
+    (src_dir / "覚書.txt").write_bytes(b"hello")
+    (src_dir / "サブ").mkdir()
+    (src_dir / "サブ" / "添付.pdf").write_bytes(b"pdfdata")
+
+    dst_dir = tmp_path / "case" / "4_資料"
+    r = inject(src_dir, dst_dir)
+
+    assert r.ok
+    assert r.action == "inject"
+    moved = dst_dir / "案件メモ"
+    assert moved.is_dir()
+    assert (moved / "覚書.txt").read_bytes() == b"hello"
+    assert (moved / "サブ" / "添付.pdf").read_bytes() == b"pdfdata"
+    assert not src_dir.exists()                    # 元は消える
+
+
+def test_inject_folder_collision_renumbers(tmp_path: Path):
+    """フォルダ衝突時は ` (2)` 連番付与で回避 (ファイルと同方式)。"""
+    src_dir = tmp_path / "案件メモ"
+    src_dir.mkdir()
+    (src_dir / "a.txt").write_bytes(b"new")
+
+    dst_dir = tmp_path / "case" / "4_資料"
+    dst_dir.mkdir(parents=True)
+    (dst_dir / "案件メモ").mkdir()                 # 既存衝突
+    (dst_dir / "案件メモ" / "old.txt").write_bytes(b"old")
+
+    r = inject(src_dir, dst_dir)
+    assert r.ok
+    assert r.collided is True
+    assert r.renamed_to == "案件メモ (2)"
+    assert (dst_dir / "案件メモ" / "old.txt").exists()    # 既存は残る
+    assert (dst_dir / "案件メモ (2)" / "a.txt").exists()  # 新規が連番で入る
+
+
 # ─────────── move ───────────
 
 def test_move_success(tmp_path: Path):

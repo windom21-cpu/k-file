@@ -22,17 +22,71 @@ def _touch(path: Path, body: bytes = b"x", days_old: int = 0) -> Path:
 
 
 def test_list_inbox_files_basic(tmp_path: Path):
-    """PDF と画像は表示、txt は除外、フォルダも除外。"""
+    """ブラックリスト方式: 一時/システムファイル以外は全て表示 (フォルダ含む)。
+
+    2026-05-25 設計変更: 「Inbox は監視先フォルダの中身をそのまま見せる」方針
+    に転換。k-systemz サブアプリの `.k-photo` 等 JSON 一時保存ファイル / デスク
+    トップに作る作業フォルダ等が業務上 Inbox に必要なため、ホワイトリストを撤去。
+    """
     src_dir = tmp_path / "inbox"
     src_dir.mkdir()
     _touch(src_dir / "a.pdf")
     _touch(src_dir / "b.png")
-    _touch(src_dir / "c.txt")           # 拡張子フィルタで除外
-    (src_dir / "subfolder").mkdir()     # is_file=False で除外
+    _touch(src_dir / "c.txt")
+    _touch(src_dir / "d.docx")
+    _touch(src_dir / "e.heic")           # 未知拡張子 → 表示する (ブラックリスト方式)
+    _touch(src_dir / "memo.k-photo")     # k-systemz サブアプリ JSON → 表示する
+    _touch(src_dir / "Thumbs.db")        # Win サムネキャッシュ → 隠す
+    _touch(src_dir / ".DS_Store")        # macOS → 隠す
+    _touch(src_dir / "wip.tmp")          # 一時ファイル → 隠す
+    _touch(src_dir / ".hidden")          # 一般のドット隠しファイル → 隠す
+    (src_dir / "subfolder").mkdir()      # フォルダ → 表示する (Inbox 経路で運ぶ)
 
     result = list_inbox_files([InboxSource("test", src_dir)])
     names = {f.name for f in result}
-    assert names == {"a.pdf", "b.png"}
+    assert names == {
+        "a.pdf", "b.png", "c.txt", "d.docx",
+        "e.heic", "memo.k-photo", "subfolder",
+    }
+
+
+def test_list_inbox_files_folder_marked_as_dir(tmp_path: Path):
+    """フォルダは is_dir=True, size=0 で返る (UI 側で `<DIR>` 表示するため)。"""
+    src_dir = tmp_path / "inbox"
+    src_dir.mkdir()
+    _touch(src_dir / "doc.pdf", body=b"abc")
+    (src_dir / "案件A").mkdir()
+
+    result = list_inbox_files([InboxSource("test", src_dir)])
+    by_name = {f.name: f for f in result}
+    assert by_name["doc.pdf"].is_dir is False
+    assert by_name["doc.pdf"].size == 3
+    assert by_name["案件A"].is_dir is True
+    assert by_name["案件A"].size == 0
+
+
+def test_list_inbox_files_excludes_zero_byte_recent(tmp_path: Path):
+    """0 バイトかつ更新 5 秒以内のファイルは「書き込み中」扱いで除外。
+
+    複合機がスキャン PDF を書き始めた直後に Inbox が refresh されると、
+    0KB のファイルが並ぶ問題への対策 (2026-05-25 本番テスト報告)。
+    """
+    src_dir = tmp_path / "inbox"
+    src_dir.mkdir()
+    # 0 バイトで現在時刻に作成 → 書き込み中扱い
+    fresh_zero = src_dir / "fresh_zero.pdf"
+    fresh_zero.write_bytes(b"")
+    # 0 バイトだが mtime を十分過去にする → 実体として空のファイル扱いで表示
+    old_zero = src_dir / "old_zero.pdf"
+    old_zero.write_bytes(b"")
+    past = time.time() - 60.0
+    os.utime(str(old_zero), (past, past))
+    # 中身ありは普通に表示
+    _touch(src_dir / "normal.pdf", body=b"abc")
+
+    result = list_inbox_files([InboxSource("test", src_dir)])
+    names = {f.name for f in result}
+    assert names == {"old_zero.pdf", "normal.pdf"}
 
 
 def test_list_inbox_files_no_cutoff_shows_old(tmp_path: Path):

@@ -12,10 +12,47 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QFileSystemWatcher, QObject, Signal
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 
-# Inbox に表示する拡張子 (PDF + 画像)。.txt / .lnk / フォルダ等は非表示。
-INBOX_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+# 2026-05-25: ホワイトリスト方式 (INBOX_EXTENSIONS) を撤去し、Inbox は
+# 「監視先フォルダの中身をほぼそのまま見せる」方針に転換。背景は:
+#   - k-systemz のサブアプリ (k-photo 等) が `.k-photo` 等の JSON 一時保存
+#     ファイルを生成 → 事件フォルダに保管 → リネーム/移動/削除する運用がある
+#   - ユーザーがデスクトップに作業フォルダを作って事件に運ぶ流れがある
+#   - 拡張子をホワイトリストで列挙していくと未知の業務拡張子を取りこぼす
+# ブラックリストは「明らかに見せたくない」ものだけ:
+#   - 一時/未完了 (.tmp / .part / .crdownload / .download)
+#   - OS のシステムファイル (.DS_Store / Thumbs.db / desktop.ini)
+#   - ドット隠しファイル (Linux 流儀、ただし `.k-*` 系は k-systemz 連携で残す)
+INBOX_EXCLUDE_EXTENSIONS = {
+    ".tmp", ".part", ".crdownload", ".download",
+}
+INBOX_EXCLUDE_NAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+}
+
+# 0 バイトファイルが「複合機が書き込み中」なのか「実体として空」なのかを
+# 判別する閾値 (秒)。更新時刻が現在から N 秒以内 ＆ 0 バイトなら書き込み中扱い。
+_INCOMPLETE_GRACE_SEC = 5.0
+
+
+def _is_visible_in_inbox(p: Path) -> bool:
+    """Inbox に表示すべきかの判定 (ファイル/フォルダ共通)。
+
+    - システム/一時ファイルは除外
+    - ドット隠しは除外 (ただし `.k-*` は k-systemz サブアプリ管理ファイルなので残す)
+    """
+    name = p.name
+    if name in INBOX_EXCLUDE_NAMES:
+        return False
+    # `.k-photo` 等は表示対象。それ以外のドットファイルは隠す
+    if name.startswith(".") and not name.startswith(".k-"):
+        return False
+    if p.is_file() and p.suffix.lower() in INBOX_EXCLUDE_EXTENSIONS:
+        return False
+    return True
 
 
 @dataclass
@@ -34,13 +71,20 @@ class InboxSource:
 
 @dataclass
 class InboxFile:
-    """Inbox 監視対象フォルダ内の 1 ファイル。"""
+    """Inbox 監視対象フォルダ内の 1 エントリ (ファイル or フォルダ)。
+
+    フォルダの場合は is_dir=True、size=0 で扱う。fields 名 (InboxFile) は歴史的に
+    ファイル前提だったが、2026-05-25 以降は「Inbox は監視先フォルダの中身を
+    そのまま見せる」方針に転換 (k-systemz サブアプリ・デスクトップ作業フォルダの
+    現実反映) のためフォルダも含む。
+    """
 
     name: str
     path: Path
     source: str   # 出所ラベル ("scan" / "Desktop" / "作業" 等)
     mtime: float
     size: int
+    is_dir: bool = False
 
 
 def list_inbox_files(
@@ -64,26 +108,53 @@ def list_inbox_files(
         except OSError:
             continue
         for p in children:
-            if not p.is_file():
+            # ファイル/フォルダ両方を対象に。symlink は target に追従して判定
+            try:
+                is_dir = p.is_dir()
+                is_file = p.is_file()
+            except OSError:
                 continue
-            if p.suffix.lower() not in INBOX_EXTENSIONS:
+            if not (is_file or is_dir):
+                continue
+            if not _is_visible_in_inbox(p):
                 continue
             try:
                 st = p.stat()
             except OSError:
                 continue
             if cutoff_ts is not None and st.st_mtime < cutoff_ts:
-                continue   # 古いファイルは表示しない
+                continue   # 古いものは表示しない
+            # 複合機がスキャン PDF を書き込んでいる途中で
+            # QFileSystemWatcher が発火 → 0KB のファイルが Inbox に並ぶバグ
+            # (2026-05-25 本番テスト報告) を抑制する。0 バイト & 最近更新 ＆
+            # ファイル (フォルダは size=0 が正常なので除外しない)。
+            if (
+                is_file
+                and st.st_size == 0
+                and (base - st.st_mtime) < _INCOMPLETE_GRACE_SEC
+            ):
+                continue
+            size = 0 if is_dir else st.st_size
             out.append(
-                InboxFile(p.name, p, src.label, st.st_mtime, st.st_size)
+                InboxFile(p.name, p, src.label, st.st_mtime, size, is_dir=is_dir)
             )
     return out
 
 
 class InboxWatcher(QObject):
-    """監視対象フォルダ群を見張り、変更時に changed を出す。"""
+    """監視対象フォルダ群を見張り、変更時に changed を出す。
+
+    複合機が PDF を連続書き込み中は directoryChanged が連発するので、最後の
+    発火から 700ms 沈黙した時点で 1 回だけ changed を emit する (debounce)。
+    これにより「書き込み開始時 0 バイト → 増加中 → 完了」の途中の中途半端な
+    状態を Inbox に出さず、安定後の最終状態を見せられる。
+    """
 
     changed = Signal()
+
+    # 連続書き込みの最後の発火から実 emit までの遅延 (ms)。長すぎると
+    # ユーザーが「出てこない」と感じ、短すぎると 0KB が見える。
+    DEBOUNCE_MS = 700
 
     def __init__(
         self,
@@ -99,9 +170,22 @@ class InboxWatcher(QObject):
             if src.path.is_dir():
                 self._watcher.addPath(str(src.path))
         self._watcher.directoryChanged.connect(self._on_dir_changed)
+        # debounce: directoryChanged が連発すると毎回タイマーが reset され、
+        # 沈黙してから DEBOUNCE_MS 後に 1 回だけ emit される。
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(self.DEBOUNCE_MS)
+        self._debounce.timeout.connect(self.changed.emit)
+        # 「書き込み中で表示を保留中」のファイル群を遅延再走査するためのフォロー
+        # アップタイマー (Inbox 表示で 0KB が消えた直後にもう一度見直す)。
+        self._followup = QTimer(self)
+        self._followup.setSingleShot(True)
+        self._followup.setInterval(int(_INCOMPLETE_GRACE_SEC * 1000) + 500)
+        self._followup.timeout.connect(self.changed.emit)
 
     def _on_dir_changed(self, _path: str) -> None:
-        self.changed.emit()
+        self._debounce.start()       # 連続発火中は最後の沈黙でだけ emit
+        self._followup.start()       # 書き込み完了直後の追い refresh
 
     def list_files(self) -> list[InboxFile]:
         """全監視対象フォルダの PDF + 画像ファイルを統合一覧で返す。"""
