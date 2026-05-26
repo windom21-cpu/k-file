@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QPointF, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -153,6 +153,13 @@ class PreviewPane(QWidget):
     def _build_pdf_page(self) -> QWidget:
         """QPdfView + 下端のページ送りバーをまとめた PDF 表示ウィジェット。"""
         self._pdf_doc = QPdfDocument(self)
+        # ファイルパス直 load だと Win 上で PDFium がファイルハンドルを保持
+        # し続け、close() しても rename/delete が「使用中」エラーで失敗する
+        # (2026-05-26)。bytes を一旦読んで QBuffer 経由で load することで
+        # Qt 側にファイルハンドルを持たせない方針に変更。バッファと bytes の
+        # 寿命を self で管理 (load 完了後も lazy 解析のため参照を保つ必要)。
+        self._pdf_data: QByteArray | None = None
+        self._pdf_buffer: QBuffer | None = None
         self._pdf_view = QPdfView()
         self._pdf_view.setObjectName("previewPdf")
         self._pdf_view.setDocument(self._pdf_doc)
@@ -245,12 +252,25 @@ class PreviewPane(QWidget):
         self._show_message("ファイルを選択するとプレビュー表示")
 
     def _release_pdf(self) -> None:
-        """QPdfDocument を確実に閉じてファイルハンドルを解放する。"""
+        """QPdfDocument を閉じて in-memory バッファも解放する。
+
+        PDF は QBuffer 経由の in-memory bytes として load しているため、Qt 側は
+        ファイルハンドルを保持していない (`_show_pdf` 冒頭で `p.read_bytes()`
+        を完了した時点で OS のファイルハンドルは閉じている)。close() は表示
+        状態を Null に戻し、buffer/bytes 参照を捨ててメモリを解放するために呼ぶ。
+        """
         try:
             if self._pdf_doc.status() != QPdfDocument.Status.Null:
                 self._pdf_doc.close()
         except RuntimeError:
             pass  # 既に解放されている等
+        if self._pdf_buffer is not None:
+            try:
+                self._pdf_buffer.close()
+            except RuntimeError:
+                pass
+            self._pdf_buffer = None
+        self._pdf_data = None
 
     def _update_info(self, p: Path, extra: str = "") -> None:
         """上部固定ヘッダーをファイル情報で更新。
@@ -273,7 +293,27 @@ class PreviewPane(QWidget):
             self._info_label.setToolTip(str(p))
 
     def _show_pdf(self, p: Path) -> None:
-        self._pdf_doc.load(str(p))
+        """PDF を bytes に読んで QBuffer 経由で load する。
+
+        QPdfDocument に直接ファイルパスを渡すと Win の PDFium がハンドルを
+        保持し続け、close() 後も rename/delete が「使用中」で失敗する
+        (2026-05-25 本番テスト) → bytes 読込み + QBuffer 経由で Qt にハンドル
+        を持たせない (2026-05-26)。`read_bytes()` 完了時点で Python のファイル
+        ハンドルは閉じるので、以降ファイルは外部から自由に操作できる。
+        """
+        # 旧バッファがあれば先に解放 (PDF 連続表示時のメモリリーク防止)
+        self._release_pdf()
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            self._update_info(p, extra="読込失敗")
+            self._show_message(f"PDF を読み込めません\n{p.name}\n{e}")
+            return
+        # QByteArray と QBuffer は self で寿命管理 (Qt の lazy 解析が参照を保つため)
+        self._pdf_data = QByteArray(data)
+        self._pdf_buffer = QBuffer(self._pdf_data, self)
+        self._pdf_buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+        self._pdf_doc.load(self._pdf_buffer)
         if self._pdf_doc.status() == QPdfDocument.Status.Ready:
             total = self._pdf_doc.pageCount()
             self._update_info(p, extra=f"{total} ページ" if total > 0 else "")

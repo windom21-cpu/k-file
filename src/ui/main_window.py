@@ -71,6 +71,10 @@ class MainWindow(QMainWindow):
         # CLI 引数で渡されたフォルダ (K-SystemZ 連携 / 「k-file で開く」の窓口)。
         # セッション復元の後で追加し、最後の引数をアクティブタブにする (M6a / ADR-17)。
         self._initial_paths: list[Path] = list(initial_paths or [])
+        # 自前の modal dialog (RenameDialog 等) を開いている間は preview を維持
+        # する用カウンタ。changeEvent の ActivationChange ハンドラが参照し、
+        # 外部アプリへの切替 (counter==0) のみ preview をクリアする (ADR-22 補足)。
+        self._internal_modal_count = 0
         self._build_layout()
         # _build_layout 完了後にセッション復元 + CLI 引数を順次オープン
         self._restore_window_size()
@@ -735,9 +739,15 @@ class MainWindow(QMainWindow):
         ユーザーが別アプリ (ブラウザ等) に切り替えた瞬間に PDF ハンドルが
         解放されるので、Explorer から直接そのファイルを削除/移動できる。
         次にアクティブに戻ってきても、現選択行で再 load されるだけで支障なし。
+
+        ただし「自前 modal dialog (rename 等) を開いた瞬間」も非アクティブ化と
+        して扱われるため、`_internal_modal_count > 0` の時はスキップして
+        preview を維持する (プレビューを見ながらのリネーム操作に対応)。
         """
         super().changeEvent(e)
         if e.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            if self._internal_modal_count > 0:
+                return  # 自前 modal: preview 維持
             if hasattr(self, "preview_pane"):
                 self.preview_pane.clear()
 
@@ -1098,11 +1108,18 @@ class MainWindow(QMainWindow):
             mode="rename",
             parent=self,
         )
-        if dlg.exec() != RenameDialog.DialogCode.Accepted:
+        # 自前 modal を示すカウンタを立てて preview を維持 (Issue 2 対策)
+        self._internal_modal_count += 1
+        try:
+            accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
+        finally:
+            self._internal_modal_count -= 1
+        if not accepted:
             return
         new_name = dlg.chosen_name()
 
-        # Win では QPdfDocument がファイルを掴んだままだと rename も失敗する
+        # Win では QPdfDocument がファイルを掴んだままだと rename も失敗するため
+        # ダイアログ確定後・rename 実行直前にプレビューを閉じてハンドル解放
         self.preview_pane.clear()
         result = file_ops.rename(path, new_name)
         if not result.ok:
@@ -1220,11 +1237,17 @@ class MainWindow(QMainWindow):
             mode="rename",
             parent=self,
         )
-        if dlg.exec() != RenameDialog.DialogCode.Accepted:
+        # 自前 modal を示すカウンタを立てて preview を維持 (Issue 2 対策)
+        self._internal_modal_count += 1
+        try:
+            accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
+        finally:
+            self._internal_modal_count -= 1
+        if not accepted:
             return
         new_name = dlg.chosen_name()
 
-        # Inbox 側もプレビューロック解除
+        # Inbox 側もダイアログ確定後・rename 実行直前にプレビューを閉じる
         self.preview_pane.clear()
         result = file_ops.rename(f.path, new_name)
         if not result.ok:
