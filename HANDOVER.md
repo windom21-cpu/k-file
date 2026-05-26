@@ -6,8 +6,9 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M5c 本番テスト対応 + polish 完了 (2026-05-25)。次は再度 Win 機検証 → β タグ (v0.1.0-beta.1)**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → 業務凍結級バグ + 設計修正を M5c で一括反映 → 同日 2 回目検証準備完了
+- 現在地: **M5d (Win 2 回目検証フォロー + cross-case Copy + K-SystemZ 連携詰め) 完了 (2026-05-26)。次は β タグ (v0.1.0-beta.1) + 自動アップデート機構の検討**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証で残バグ + 新機能要望を M5d で消化
+  - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
@@ -264,8 +265,40 @@
   - **K-SystemZ 連携技術対応**: ksystemz.db RO 接続と kfile.db に `PRAGMA busy_timeout=5000`、
     起動致命例外を `%APPDATA%\k-file\error.log` に追記、PyInstaller を `--onedir` 化
     + CI で zip 化して artifact / Release upload (ADR-21)
+- **M5d Win 2 回目検証フォロー + cross-case Copy + K-SystemZ 連携詰め (✅ 2026-05-26 完了)**:
+  2026-05-26 Win 機 2 回目検証で見つかった追加バグの修正と、ユーザー要望の
+  新機能を追加。詳細 §7 (M5d セクション)。主要点:
+  - **F2 リネーム Win ファイルロック根治 (ADR-23)**: M5c の `QPdfDocument.close()` だけでは
+    Win 上で PDFium がファイルハンドルを保持し続けるケースが残っており、F2 → OK 時に
+    「別のプロセスが実行中です」エラーで rename 失敗。`QBuffer` 経由で bytes を
+    in-memory 読込みする方式に変更 → Qt 側にファイルハンドルを持たせない
+  - **F2 中の preview 維持**: `_internal_modal_count` フラグで `changeEvent` の
+    `ActivationChange` 経由 preview clear をスキップ。「プレビューを見ながら
+    リネーム」操作を実現 (ADR-22 補足)
+  - **選択ドリフト修正 (ADR-24)**: Inbox / CasePane の `_populate` で「rebuild 前
+    に選択 path 集合を保存 → rebuild + sort 後に同 path を再選択」する処理を追加。
+    Inbox auto refresh や rename refresh で「同じ row index = 別ファイル」になり
+    意図と違うファイルを操作する事故を防ぐ。multi-select 対応
+  - **cross-case Copy 動線 2 系統 (ADR-25)**: 事件 A → 事件 B にファイルをコピー
+    する動線が無かった。Ctrl+D&D (Win Explorer 流儀、自動マッピング) + 右クリック
+    「他事件へコピー / 移動 → サブフォルダ明示」の 2 系統で追加。`file_ops.copy`
+    新設、`undo_ops` に "copy" 対応 (Ctrl+Z で dst を OS ごみ箱へ)、MainWindow に
+    共通ヘルパ `_do_cross_case_op(op, target_case_root, resolver, src_paths)`
+    でロジック集約
+  - **K-SystemZ サブアプリ拡張子対応**: 実拡張子は `.kphoto` / `.kevi` (ハイフン
+    無し) と判明 (`.k-photo` は誤称)。Inbox は既存ブラックリスト方式で問題なく
+    通過するが、dotfile 例外パターンを `.k-` 始まり → `.k` 始まりに緩和、
+    プレビュー JSON 対象に `.kphoto` / `.kevi` を追加 (`.k-photo` も後方互換維持)
+  - **K-SystemZ 側の追従対応 (k-file 側変更不要)**: `_is_kfile_running()` 撤去
+    + `psutil` 依存削除 (ADR-20 IPC 前提)、`--onedir` 配布対応マニュアル更新、
+    サブアプリ JSON は絶対パス記憶なし設計で堅牢 (返信書: `X:\K-system\k-systemz向け_k-file連携状況_260526.md`)
+  - **2 回目検証で問題なしと確認できた項目**: `.kphoto`/`.kevi` プレビュー、デスクトップ
+    フォルダの Inbox → 事件サブフォルダ移動、IPC によるウインドウ単一性、日本語
+    フォルダ名 (㈱、㊗ 等) のパス解決、case_code 前方一致衝突 — いずれも実環境で
+    支障なし。残るは β タグ + 自動アップデート機構の検討のみ
 - **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応 (M6a 完了)、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (M6a 完了)、PyInstaller `--onedir` + GitHub Actions ビルド (M5c 完了)、Win 機で業務並走 → v1.0 stable
   - ※フォルダ既定ハンドラの OS 乗っ取りは行わない (§15 ADR-2)。literal な「Explorer ダブルクリック→k-file」は、やるとしても Win 実機実験 → 上級者向け自己責任トグル止まり
+- **M6c (検討中) 自動アップデート機構**: GitHub Releases API ベースの「起動時 "更新あり" 通知」(案①、推奨) を β タグ切りと同時実装する想定。詳細 §8。差分更新 (案③) は法律実務系業務アプリでリスク高 (アップデート途中で起動不能) のため v1.0 安定期まで保留が無難
 
 ### 確定したショートカット体系 / サブフォルダ操作 (原仕様の F1〜F6 から変更済)
 - **サブフォルダボタン 左クリック**: そのサブフォルダの中身を表示 (閲覧のみ・ファイルは動かさない)
@@ -574,19 +607,143 @@
 - ✅ 67 件 pass (M5c 追加: 0KB 抑制 / フォルダ inject 2 件 / blacklist 1 件 /
   `InboxFile.is_dir` 1 件 / dedupe 1 件)
 
+### M5d Win 2 回目検証フォロー + cross-case Copy + K-SystemZ 連携詰め (2026-05-26 完了)
+
+2026-05-26 Win 機 dev 実機 (Python 3.14.3 + PySide6 6.11.1) で 2 回目本番テスト相当を
+実施した結果、M5c 残バグの修正と新機能要望を消化した一日。コミット 4 本
+(`86ec399` / `b2375f5` / `01b7499` 系)。
+
+#### F2 リネーム周りの根治 (ADR-23 + ADR-22 補足)
+- ✅ **QBuffer 経由 PDF 読込み**: `QPdfDocument.load(path)` を直接呼ぶと Win 上で
+  PDFium が `close()` 後もファイルハンドルを保持し、F2 → OK 時に
+  「別のプロセスが実行中です」エラーで rename 失敗する事象が残っていた。
+  `preview_pane.py::_show_pdf` を「`p.read_bytes()` → `QByteArray` → `QBuffer` →
+  `pdf_doc.load(buffer)`」に変更 → Qt 側はファイルハンドルを保持しない。
+  `read_bytes()` 完了時点で OS のファイルハンドルは閉じるので、以降ファイルは
+  外部から自由に rename/delete/move 可能 (ADR-23)
+- ✅ **`_internal_modal_count` フラグ**: `MainWindow` 起動時に `int = 0` を仕込み、
+  `_on_rename_in_case` / `_on_rename_in_inbox` の `dlg.exec()` を try/finally で
+  囲んで増減。`changeEvent` の `ActivationChange` ハンドラがこのカウンタを見て、
+  > 0 の時は `preview_pane.clear()` を skip → 「プレビューを見ながらのリネーム」
+  を実現。**外部アプリ切替時の release は維持** (ADR-22 不変)
+
+#### 選択ドリフト修正 (ADR-24)
+- ✅ Inbox / CasePane の `_populate` で「rebuild 前に選択 path 集合を保存
+  (`_collect_selected_paths`) → rebuild + sort 完了後に同 path を再選択
+  (`_restore_selection_by_paths`)」する処理を追加
+- ✅ multi-select 対応。currentIndex を先に動かしてから select を一括適用する
+  ことで、`itemSelectionChanged` 経由のプレビュー連動が新しい currentRow を
+  見るよう順序を保証 (選択 vs プレビュー食い違い対策)。Inbox auto refresh、
+  rename refresh、KB/MB 切替などすべての populate 経路で恩恵あり
+
+#### cross-case Copy 動線 (ADR-25)
+- ✅ **`file_ops.copy`** 新設: `shutil.copy2` (ファイル) / `shutil.copytree`
+  (フォルダ) ベース。衝突自動連番、`validate_name` 流用、`OpResult` 返却で
+  既存 inject / move / rename / trash と同じ責務分離
+- ✅ **`undo_ops` に "copy" 対応**: Ctrl+Z で dst を `send2trash` で OS ごみ箱
+  へ送るのみ (src は手付かず)。永久削除回避の保険
+- ✅ **A 案: Ctrl+D&D = cross-case Copy**: 事件タブへの D&D = Move を維持しつつ、
+  Ctrl 押下中の D&D を Qt の `proposedAction == CopyAction` で判定して Copy に
+  分岐。CasePane に `caseTabDropCopyRequested` シグナル、`_DropTabBar.dropEvent`
+  で proposedAction 読取
+- ✅ **B 案: 右クリック「他事件へコピー / 移動 → サブフォルダ明示」**: 中央
+  ファイル右クリックメニュー末尾に動的サブメニュー (他事件タブ一覧 → そのサブ
+  フォルダ一覧 + 「0 事件フォルダ直下」)。multi-select 対応、`scan_case_folder`
+  で各事件のサブフォルダを動的取得、`caseExplicitCrossCaseRequested(op,
+  target_dir, src_paths)` シグナルで MainWindow に通知
+- ✅ **MainWindow 共通ヘルパ `_do_cross_case_op`**: `op` ("copy"|"move") +
+  `target_case_root` + `target_dir_resolver: Callable[[Path], Path]` +
+  `src_paths` を受ける Strategy パターン。D&D 経路は `_automap_resolver`
+  (同名サブフォルダ自動マッピング)、明示経路は固定 `lambda _src: target_dir`
+  で resolver を渡し分け。Move/Copy / 自動・明示 の 4 経路を 1 つのループで賄う
+- ✅ ステータスバー通知文言は op によって自動切替 (「コピー」「移動」、「→」「を」)
+
+#### K-SystemZ サブアプリ拡張子対応 (.kphoto / .kevi)
+- ✅ 実拡張子は **`.kphoto`** (K-photo) と **`.kevi`** (K-evi 証拠説明書スタンプ)
+  と判明 (ハイフン無し、`.k-photo` は HANDOVER 上の仮称だった)
+- ✅ Inbox はブラックリスト方式のため通常ファイル名 (`evidence_2026.kphoto`
+  等) は既存実装で問題なく表示。検証コードで visible=True を確認済
+- ✅ `inbox_watcher._is_visible_in_inbox` の dotfile 例外を `.k-` 始まり →
+  **`.k` 始まり** に緩和。将来 K-SystemZ が dotfile 形式の設定ファイルを
+  採用しても自動対応 (`.kphoto-config` 等)
+- ✅ `preview_pane._JSON_EXTS` に `.kphoto` / `.kevi` を追加。JSON 整形プレビュー
+  (indent=2、64KB cap、UTF-8/CP932/latin-1 フォールバック) が効く。
+  `.k-photo` も後方互換で残置
+
+#### K-SystemZ 側の追従対応 (k-file 側変更不要、確認のみ)
+- ✅ `_is_kfile_running()` + psutil 依存撤去 (ADR-20 IPC 前提) — K-SystemZ 側は
+  毎回 `subprocess.Popen([kfile_exe, *paths])` で OK、ウインドウは k-file 側 IPC
+  が集約。返信書 `X:\K-system\k-systemz向け_k-file連携状況_260526.md` 参照
+- ✅ `--onedir` 配布対応マニュアル更新 (「k-file.exe だけを別フォルダにコピー禁止」
+  注意書き含む)
+- ✅ サブアプリ JSON は絶対パス記憶なし設計と判明 (Blob → ブラウザ a.download、
+  読込は input + FileReader)。k-file でリネーム / 移動 / 削除しても K-SystemZ
+  サブアプリ側に不具合発生せず
+
+#### 2 回目検証で「問題なし」と確認した項目
+- ✅ `.kphoto` / `.kevi` プレビュー (上記対応で JSON 整形表示)
+- ✅ デスクトップフォルダの Inbox → 事件サブフォルダ移動 (ADR-19 ブラックリスト
+  + フォルダ inject で対応済)
+- ✅ K-SystemZ から「フォルダを開く」連打 → タブが増えるだけで **ウインドウは
+  1 つに集約** (ADR-20 単一インスタンス + IPC)
+- ✅ 日本語フォルダ名 (㈱、㊗、機種依存文字) のパス解決
+- ✅ case_code 前方一致衝突 (R060200042 vs R0602000420 のような並走) — 実環境で
+  問題なし
+
+#### 配布物との対応
+- DL 用 zip artifact は CI が main push トリガで毎回再ビルド
+- 最新コミット `01b7499` 時点での CI artifact 名: `k-file-windows.zip` (49 MB、
+  90 日保持)
+- ユーザー差し替え手順: `C:\Users\sk21l\Desktop\k-file-windows\` フォルダごと
+  削除 → 新 zip 展開で同名フォルダ再作成。設定は `%APPDATA%\k-file\kfile.db`
+  に残るので引き継ぎ自動
+
+#### テスト
+- ✅ 67 件 pass (M5d で構造変更 = テスト追加なし。新規 `file_ops.copy` /
+  `undo_ops._undo_copy` / 選択保持ヘルパ / 共通 cross-case ヘルパ にテスト追加
+  すれば 70+ に増やせる、後続セッションでの課題)
+
 ---
 
 ## 8. 次にやること
 
-### M5c 完了 (2026-05-25) → 2 回目の Win 機検証 → β タグ → M6 残作業
+### M5d 完了 (2026-05-26) → β タグ (v0.1.0-beta.1) + 自動アップデート機構の検討
+
+2 回目 Win 機検証は 2026-05-26 セッションで実施し、検出された残バグ (F2 リネーム
+ロック残り / 選択ドリフト) は M5d で解消、要望機能 (cross-case Copy 2 系統、
+K-SystemZ サブアプリ拡張子) も追加。**`.kphoto`/`.kevi` プレビュー、デスクトップ
+フォルダ移動、IPC ウインドウ単一性、日本語名・case_code 衝突 はいずれも問題なし**
+と確認済 (ユーザー業務並走で 1 日分試行)。
+
+#### 次セッションでやる優先順
+1. **β タグ + 自動アップデート機構 (案①、推奨)** ← セッション開始時に着手
+   - `v0.1.0-beta.1` を main に tag → CI が Release 作成 + zip upload (prerelease)
+   - 同時に「起動時 GitHub Releases API でバージョン比較 → 新版あれば status bar
+     + ダイアログで通知 + Releases ページを開くボタン」を実装
+   - 詳細案 §6 M6c および本セッションメモ (`memory/auto_update_deferred.md`)
+2. **(任意) cross-case Copy / 選択保持 / `_do_cross_case_op` のテスト追加**
+   - 67 件 → 70+ 件に
+3. **業務並走の長期テスト**: β タグ済 .exe で sk21 が 1〜2 週間使ってみる
+4. **β → v1.0 stable**: 大きい問題が出なければバージョン上げ
+
+#### 自動アップデート機構の 4 案 (案①〜④、§6 参照)
+- **案① 起動時 "更新あり" 通知**: ~1 日実装、リスクほぼゼロ、推奨
+- **案② ① + zip 自動 DL**: 2-3 日、低リスク
+- **案③ 差分更新 (tufup/PyUpdater)**: 1-2 週間 + コード署名、中リスク (壊れたら
+  アプリ全死)、v1.0 安定期以降
+- **案④ WinGet 配布**: 数時間 + 申請、低リスク、公開拡大時
+- 推奨は **案①** を β タグと同時実装。差分更新は法律実務系業務アプリにとって
+  リスクが高すぎる (アップデート途中で起動不能の可能性) ため保留が無難
+
+### M5c 完了 (2026-05-25) → 2 回目検証 (2026-05-26 ✅ 完了) → M5d 反映 (済)
 
 M5c で 1 回目 Win 機本番テスト報告 (プレビューロックで削除不能 / Inbox 2 倍表示 /
 タブ氏名空 / 単一インスタンス未対応 / 0KB スキャン / Office・JSON プレビュー欠如
 等) を一括解消。
 
-次は **2 回目 Win 機検証** (CI run 26402422373 の zip artifact を Win 機で取得 →
-M5c 全項目の検証 → 問題なければ β タグ v0.1.0-beta.1) で正式 prerelease 配布。
-詳細チェックリストは「M5c 検証ポイント」参照。
+2 回目 Win 機検証 (CI run `26435251281` の zip artifact 相当を `python -m src.main`
+で dev 実行、PySide6 6.11.1 cp310-abi3) で M5c 全項目検証 → 残バグを M5d で解消
+→ ユーザー業務並走で「問題なし」を確認、β タグ準備完了。
 
 ### M3/M4/M5 完了 (2026-05-23) → 1 回目 Win 機検証 (済) → M5c 反映 (済)
 
@@ -640,22 +797,30 @@ M5c 全項目の検証 → 問題なければ β タグ v0.1.0-beta.1) で正式
 - フォーカス周りの選択残留 → Tab/click で相手選択クリア
 - Desktop 2 件設定で 2 倍表示事故 → dev デフォルト整理 + dedupe 保険
 
-**2 回目 (← 次)**: CI run 26402422373 の `k-file-windows` zip を Win 機で取得
-し、M5c チェックリストを実環境で再検証:
-- `.k-photo` ファイルを Inbox / 中央テーブル で確認 → 整形 JSON プレビュー
-- デスクトップに作ったフォルダを Alt+0〜9 で事件サブフォルダに丸ごと移動
-- K-SystemZ から「フォルダを開く」連打 → タブが増えていく (ウインドウ増えない)
-- 実 ksystemz.db で `office_info.kfile_exe_path` を新 .exe パスに更新、
-  `--onedir` の zip 展開先絶対パスを指す
-- 業務並走で 1〜2 日使ってみて致命的な引っかかりが無いか確認
-- **パス区切り (`\` vs `/`)** や **日本語フォルダ名 (㈱、㊗ 等の機種依存文字)**、
-  **`folder_path` カラムの実値**、**case_code の前方一致時の衝突** (R060200042 と
-  R0602000420 が並ぶ事務所はほぼ無いが念のため) などのエッジケース
-- Win .lnk 解決 (PowerShell COM) が実環境でちゃんと動くか (`infra/folder_shortcut.resolve_shortcut`)
-- 一通り動けば **β タグ** (v0.1.0-beta.1) → Releases で prerelease 配布
+**2 回目 (✅ 2026-05-26)**: Win 機 dev 実行 (`.venv\Scripts\python.exe -m src.main`、
+Python 3.14.3 + PySide6 6.11.1 cp310-abi3) で検証。検出事項は M5d で全て反映済:
+- F2 リネームが「別のプロセスが実行中です」で失敗 (M5c QPdfDocument.close 単独
+  ではハンドル残留) → ADR-23 QBuffer 経由読込みに切替で根治
+- F2 ダイアログ開いた瞬間に preview が消える → ADR-22 補足 `_internal_modal_count`
+  フラグで自前 modal を判別、preview 維持
+- リネーム後・Inbox auto refresh 後に「選択ファイル ≠ プレビュー」または
+  「意図と違うファイルが移動」 → ADR-24 path 集合保存・復元で根治
+- 事件タブ間で **Copy 動線が無い** → ADR-25 Ctrl+D&D + 右クリックの 2 系統追加
+- K-SystemZ サブアプリ拡張子 `.k-photo` が誤称、実際は `.kphoto`/`.kevi`
+  (ハイフン無し) → dotfile 例外を `.k` に緩和、プレビュー JSON 対象に追加
 
-**並行作業** (K-SystemZ 側): M6b 単一インスタンスが完成したので、K-SystemZ 側の
-「k-file.exe プロセス重複チェック」は撤去可能 (連携実装者に連絡が要る)。
+**問題なしと確認できた項目** (β タグ前提クリア):
+- `.kphoto`/`.kevi` プレビュー (上記対応で動作確認)
+- デスクトップフォルダの Inbox → 事件サブフォルダ移動
+- K-SystemZ から連打 → ウインドウ単一性 (ADR-20 IPC)
+- 日本語フォルダ名 (㈱、㊗、機種依存文字) のパス解決
+- case_code 前方一致衝突
+- Win .lnk 解決 (PowerShell COM 経由)
+
+**並行作業** (K-SystemZ 側): 2026-05-26 にユーザー連絡で `_is_kfile_running()`
+撤去 + psutil 依存削除完了 (返信書 `X:\K-system\k-systemz向け_k-file連携状況_260526.md`)。
+K-SystemZ 側は毎回 `subprocess.Popen([kfile_exe, *paths])` を呼ぶだけで OK、
+ウインドウ集約は k-file 側 IPC が担う。
 
 ### 着手前メモ
 - Win .exe ビルドで QtPdf モジュール/プラグインの同梱を確認 (`k-file.spec` / CI)
@@ -956,6 +1121,77 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   走ったが、本当の原因は **splitter の stretch factor + Qt のレイアウトタイミング**
   だった。ユーザーが先に「splitter サイズ不揃いでは」と指摘していたが私が拾えなかった。
   「直接コストの低い仮説」から検証する順序を守ること。
+
+### ADR-23: PDF プレビューは QBuffer 経由で in-memory 読込 (ファイルパス直 load しない) (2026-05-26)
+- **経緯**: M5c 時点で `PreviewPane.clear()` → `QPdfDocument.close()` + `setDocument(None)`
+  → 再付与 で Win のファイルロック対策を入れたが、Win 2 回目検証で F2 リネーム時に
+  「別のプロセスが実行中です」エラーが残ることが判明。原因は **PDFium が Win 上で
+  `close()` 後もファイルハンドル (Direct2D 経由含む) を保持し続けるケース**。
+- **検討**: (a) `setDocument(None)` をより強く / processEvents で押し出す
+  (b) bytes に読んでから `QBuffer` 経由で load する (c) リトライ + sleep。
+- **決定**: **(b) QBuffer 経由 in-memory 読込**。`_show_pdf` で `Path.read_bytes()`
+  → `QByteArray` → `QBuffer` (parent=self) → `pdf_doc.load(buffer)`。`read_bytes()`
+  完了時点で Python 側のファイルハンドルは閉じ、Qt 側もハンドルではなくバッファを
+  読むだけになる。`_release_pdf` ではバッファと QByteArray の Python 参照を None
+  に落とすだけで完全解放できる。
+- **理由**: Qt にファイルハンドル自体を持たせない方が、Win 上の挙動が原理的に
+  予測可能になる (タイミング依存・OS バージョン依存のハンドル残留が起こらない)。
+  メモリ使用量は PDF サイズ分増えるが、法律実務 PDF (~50MB 想定) では問題なし。
+- **付随**: `preview_pane.py` に `self._pdf_data: QByteArray | None` /
+  `self._pdf_buffer: QBuffer | None` を寿命管理用に追加。次回 `_show_pdf` 冒頭
+  で `_release_pdf` を呼んで旧バッファ解放 → 新規読込みのフロー。
+
+### ADR-24: テーブル refresh 時の選択は path で復元 (currentIndex 先 → select 後) (2026-05-26)
+- **経緯**: Inbox の `QFileSystemWatcher` 経由 auto refresh、rename 後の
+  `refresh_current_view()`、KB/MB 切替などで `_populate()` が呼ばれる。素朴に
+  `setRowCount` + `setItem` で rebuild すると、同じ行 index が別ファイルを指す
+  状態になり、ユーザーが「選択した A.pdf を移動する」つもりが B.pdf を動かして
+  しまう事故が発生 (Win 2 回目検証で sk21 が遭遇)。
+- **決定**: 両ペイン (Inbox / CasePane) の `_populate` 冒頭で
+  `_collect_selected_paths()` → set[str] で選択中ファイルの絶対パスを保存。
+  rebuild + sort 完了後に `_restore_selection_by_paths(prev_paths)` で同じ
+  path を持つ行を探して再選択する。multi-select 対応。
+- **詳細**: `_restore_selection_by_paths` は (i) まず
+  `selectionModel.setCurrentIndex(.., NoUpdate)` で **currentIndex を先に
+  動かす** → (ii) `QItemSelection` を組み立てて `select(.., ClearAndSelect|Rows)`
+  で一括適用する。この順序で行うことで、`itemSelectionChanged` → `_on_table_selection`
+  → `fileSelected.emit` が走るタイミングで `currentRow` がすでに新しい行を指して
+  いる状態になり、プレビューが「選択行と一致したファイル」を表示する。
+- **理由**: 順序を逆にすると、selectionChanged が古い currentRow で発火 → 別
+  ファイルがプレビューに出る現象が発生 (Win 2 回目検証で一度遭遇、ADR-24 で
+  順序を確定)。
+- **キー埋込み**: Inbox は `setData(Qt.ItemDataRole.UserRole, str(path))` で
+  Name セルに path を埋め込み、CasePane は `_NameItem.path` 属性を使う。
+  ソート後でも一意に識別できる。
+
+### ADR-25: cross-case Copy 動線は Ctrl+D&D + 右クリック明示の 2 系統 (2026-05-26)
+- **経緯**: M5c までは事件 A → 事件 B にファイルをコピーする動線が存在せず、
+  D&D も Move 一択だった。ユーザー要望: 「事件タブ内ファイルから別事件タブの
+  別フォルダへファイルを移行 (コピー) できる動線が欲しい」。
+- **検討案** (本ドキュメント 2026-05-26 セッション中で提示):
+  - A. Ctrl+D&D = Copy (Win Explorer 標準、最少変更)
+  - B. 右クリック →「他事件へコピー / 移動 → サブフォルダ明示」(発見性・精度)
+  - C. ドラッグ中の他タブ hover で auto-activate → サブへ drop
+  - D. 既存 D&D に「コピー/移動 + サブフォルダ選択」ダイアログを後置
+- **決定**: **A + B 併設**。
+  - **A (Ctrl+D&D)**: 既存の D&D = Move を維持しつつ、Ctrl 押下中の D&D を
+    `e.proposedAction() == CopyAction` で判定して Copy に分岐 (Qt の startDrag
+    で `MoveAction | CopyAction` を許可しているため自動的に効く)。落とし先は
+    既存と同じ「同名サブフォルダ自動マッピング」で素早く実行。
+  - **B (右クリックメニュー)**: 中央ファイル右クリック末尾に「他事件へコピー…」
+    「他事件へ移動…」サブメニュー → 他事件タブ一覧 → サブフォルダ一覧 (含む
+    「0 事件フォルダ直下」) → 明示指定して実行。落とし先サブフォルダを具体
+    指定したい場合に使う。
+- **共通実装**: MainWindow に `_do_cross_case_op(op, target_case_root,
+  target_dir_resolver: Callable[[Path], Path], src_paths)` ヘルパを抽出。
+  `op` ("copy"|"move") と `target_dir_resolver` を渡し分けることで、D&D 経路
+  (`_automap_resolver` で同名マッピング closure) と明示経路 (`lambda _src:
+  target_dir` で固定) を 1 つのループで賄う Strategy パターン。
+- **付随**: `file_ops.copy` 新設 (`shutil.copy2` / `copytree`、衝突自動連番)、
+  `undo_ops` に "copy" 対応 (Ctrl+Z で dst を OS ごみ箱へ送るのみ、src は手付かず)。
+- **理由**: A は素早さ (ADR-7 と整合)、B は精度 (落とし先サブフォルダ具体指定)。
+  両者は競合せず併設可能で、ユーザーの作業文脈に応じて使い分けられる。差分
+  更新 (案 C/D) は実装複雑度に対して得るものが少ないと判断。
 
 ---
 
