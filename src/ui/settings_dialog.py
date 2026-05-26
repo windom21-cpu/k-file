@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -193,6 +194,20 @@ class SettingsDialog(QDialog):
         kf_label.setReadOnly(True)
         body.addWidget(kf_label)
 
+        body.addWidget(self._sep())
+
+        # ── 自動アップデート ──
+        body.addWidget(self._h2("自動アップデート"))
+        body.addWidget(QLabel(
+            "起動時に GitHub Releases をチェックして新版があれば通知します。\n"
+            "通知から「更新...」をクリックすると DL → 再起動 → 新版に切替わります。"
+        ))
+        self._auto_update_cb = QCheckBox("起動時にアップデートを確認する")
+        self._auto_update_cb.setChecked(
+            (db.get_setting("auto_update_check_enabled", "1") or "1") == "1"
+        )
+        body.addWidget(self._auto_update_cb)
+
         # ── OK / キャンセル ──
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -323,6 +338,10 @@ class SettingsDialog(QDialog):
         self._db.set_setting(KEY_KSYSTEMZ_DB, self._ks_edit.text().strip())
         self._db.set_setting(KEY_QUICK_NOTES, self._qn_edit.text().strip())
         self._db.set_setting(KEY_QUICK_TEMP, self._qt_edit.text().strip())
+        self._db.set_setting(
+            "auto_update_check_enabled",
+            "1" if self._auto_update_cb.isChecked() else "0",
+        )
         self._sources = new_sources
         self.accept()
 

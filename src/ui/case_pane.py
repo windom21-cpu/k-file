@@ -519,8 +519,44 @@ class CasePane(QWidget):
             " 文書は A に集約する運用)"
         )
         self.btn_to_case.clicked.connect(self._show_other_cases_menu)
+
+        # ── ファイル名 絞込検索 (Win95 風: 虫眼鏡アイコン + 折り畳み式 LineEdit) ──
+        # 通常は虫眼鏡だけ表示、Ctrl+F or 虫眼鏡クリックで input 欄が現れる。
+        # AND 検索 (空白区切り) で「うけと 田中」のような複数語マッチに対応。
+        self._filter_query = ""
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("caseFilterEdit")
+        self.filter_edit.setPlaceholderText("絞込検索")
+        self.filter_edit.setMaximumWidth(180)
+        self.filter_edit.setVisible(False)
+        self.filter_edit.textChanged.connect(self._on_filter_text_changed)
+        sc_filter_esc = QShortcut(
+            QKeySequence(Qt.Key.Key_Escape), self.filter_edit
+        )
+        sc_filter_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        sc_filter_esc.activated.connect(self._on_filter_escape)
+        self.filter_count_label = QLabel("")
+        self.filter_count_label.setObjectName("caseFilterCount")
+        self.filter_count_label.setVisible(False)
+        self.btn_filter = QPushButton("🔍")
+        self.btn_filter.setObjectName("caseToolBtn")
+        self.btn_filter.setCheckable(True)
+        self.btn_filter.setToolTip(
+            "ファイル名で絞込検索 (Ctrl+F)\n"
+            "空白区切りで AND 検索 (例: 受領 田中)\n"
+            "Esc で解除"
+        )
+        self.btn_filter.clicked.connect(self._on_filter_btn_clicked)
+        path_row.addWidget(self.filter_edit)
+        path_row.addWidget(self.filter_count_label)
+        path_row.addWidget(self.btn_filter)
         path_row.addWidget(self.btn_to_case)
         outer.addLayout(path_row)
+
+        # Ctrl+F: 検索入力欄をひらいてフォーカス
+        sc_ctrl_f = QShortcut(QKeySequence("Ctrl+F"), self)
+        sc_ctrl_f.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_ctrl_f.activated.connect(self._open_filter)
 
         # ── 下段: 左=サブフォルダボタン / 右=ファイル一覧 ──
         mid = QHBoxLayout()
@@ -666,6 +702,8 @@ class CasePane(QWidget):
 
     def _on_case_tab_changed(self, idx: int) -> None:
         if 0 <= idx < len(self._case_paths):
+            # タブ切替時に絞込検索を解除 (別事件で前の検索語が残ると混乱)
+            self._reset_filter()
             self._load_case(idx)
             self.caseTabChanged.emit(idx, self._case_code, self._case_name)
 
@@ -816,6 +854,9 @@ class CasePane(QWidget):
         btn = self._view_btns.get(view_id)
         if btn is None:
             return
+        # サブフォルダ切替時に絞込検索を解除 (別フォルダで前の検索語が残ると混乱)
+        if self._cur_view_id != view_id:
+            self._reset_filter()
         btn.setChecked(True)
         self._cur_view_id = view_id
         if view_id == ROOT_VIEW_ID:
@@ -921,7 +962,15 @@ class CasePane(QWidget):
         return True
 
     def _on_table_selection(self) -> None:
-        """行選択が変わったら、ファイルならパスを通知 (フォルダ・未選択は "")。"""
+        """行選択が変わったら、ファイルならパスを通知 (フォルダ・未選択は "")。
+        clearSelection 後は currentRow が古い値のまま残るので、選択が空の
+        場合は currentRow を見ずに必ず空文字を emit する (Inbox→事件移動後
+        eventFilter で inbox 側の選択を消した直後にプレビューが古い path に
+        戻る事故を防ぐ、2026-05-26)。"""
+        sel_model = self.table.selectionModel()
+        if sel_model is None or not sel_model.selectedRows():
+            self.fileSelected.emit("")
+            return
         row = self.table.currentRow()
         item = self.table.item(row, 0) if row >= 0 else None
         if isinstance(item, _NameItem) and not item.is_dir:
@@ -993,6 +1042,10 @@ class CasePane(QWidget):
         # 行を再選択する (rename/refresh 後に選択が別ファイルにずれる現象を
         # 防ぐ、2026-05-26)。
         prev_paths = self._collect_selected_paths()
+        # 選択していたファイルが消えた (削除・移動) ケースで「同じ行 index の
+        # 隣接ファイル」へフォールバックするため、rebuild 直前の currentRow も
+        # 控える。
+        prev_current_row = self.table.currentRow()
         self.table.setSortingEnabled(False)
         has_parent = parent_path is not None
         self.table.setRowCount(len(entries) + (1 if has_parent else 0))
@@ -1070,9 +1123,17 @@ class CasePane(QWidget):
         if not getattr(self, "_sort_initialized", False):
             self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
             self._sort_initialized = True
-        # ソート後の最終行配置で、保存した path 群を再選択
+        # ソート後の最終行配置で、保存した path 群を再選択。restore に失敗した
+        # (= 選択中のファイルが全部消えた) 場合は同じ row index の隣接行を選び、
+        # プレビューが「直前まで見ていた近傍」を表示し続けるようにする
+        # (Inbox→事件移動などペイン跨ぎの focus 制御は呼び出し側で別途行う)。
         if prev_paths:
-            self._restore_selection_by_paths(prev_paths)
+            restored = self._restore_selection_by_paths(prev_paths)
+            if not restored:
+                self._select_adjacent_row(prev_current_row)
+        # 絞込検索 (Ctrl+F) が有効ならフィルタを再適用 (refresh 後にヒット行が
+        # 変わる可能性のため)。空クエリなら全行表示の no-op。
+        self._apply_filter()
 
     def _collect_selected_paths(self) -> set[str]:
         """現在の選択行の Path を文字列集合で取得。`..` 行は除外。
@@ -1087,25 +1148,31 @@ class CasePane(QWidget):
                 out.add(str(it.path))
         return out
 
-    def _restore_selection_by_paths(self, paths: set[str]) -> None:
+    def _restore_selection_by_paths(self, paths: set[str]) -> bool:
         """rebuild 後のテーブルから path が一致する行を再選択する。
         multi-select 対応。currentIndex を先に動かしてから select を発火する
         ことで、itemSelectionChanged 経由のプレビュー連動が新しい currentRow
-        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。"""
+        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。
+
+        Returns: 1 行以上選択できたか。呼び出し側が「全部消えた」検出に使う。"""
         if not paths:
-            return
+            return False
         rows: list[int] = []
         for row in range(self.table.rowCount()):
             it = self.table.item(row, 0)
             if isinstance(it, _NameItem) and not it.is_parent:
                 if str(it.path) in paths:
                     rows.append(row)
-        if not rows:
-            return
         sel_model = self.table.selectionModel()
         model = self.table.model()
         if sel_model is None or model is None:
-            return
+            return False
+        if not rows:
+            # 旧選択の row index に「selected」フラグが残っているとそこが
+            # 別ファイルなのに濃紺で出てしまう。一旦クリアして呼び出し側に
+            # フォールバック判断を委ねる。
+            sel_model.clearSelection()
+            return False
         # 先に currentIndex を更新 (selectionChanged は発火させない)
         sel_model.setCurrentIndex(
             model.index(rows[0], 0),
@@ -1123,6 +1190,27 @@ class CasePane(QWidget):
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
+        return True
+
+    def _select_adjacent_row(self, hint_row: int) -> None:
+        """選択ファイルが全部消えた時のフォールバック: hint_row と同じ index
+        (テーブル末尾を超えたら末尾) の行を選択する。`..` 行は飛ばす。
+        Inbox→事件移動など「移動先を別ペインで focus する」場合はここを通る前に
+        呼び出し側で focus 制御するため、ここはあくまで「同ペイン内の隣接行」用。"""
+        n = self.table.rowCount()
+        if n == 0:
+            return
+        target = min(max(hint_row, 0), n - 1)
+        it = self.table.item(target, 0)
+        if isinstance(it, _NameItem) and it.is_parent:
+            # `..` 行を飛ばして次の行へ
+            if target + 1 < n:
+                target += 1
+                it = self.table.item(target, 0)
+            else:
+                return
+        if isinstance(it, _NameItem):
+            self._restore_selection_by_paths({str(it.path)})
 
     def _show_header_menu(self, pos) -> None:
         """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""
@@ -1470,13 +1558,86 @@ class CasePane(QWidget):
                 out.append((item.path, item.is_dir))
         return out
 
-    def select_path_in_table(self, path: Path) -> None:
-        """指定パスの行を選択状態にする (rename 直後にフォーカスを保つため)。"""
+    # ───────── ファイル名 絞込検索 (Ctrl+F) ─────────
+
+    def _open_filter(self) -> None:
+        """Ctrl+F or 虫眼鏡クリック: 検索入力欄を表示してフォーカス。"""
+        self.btn_filter.setChecked(True)
+        self.filter_edit.setVisible(True)
+        self.filter_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.filter_edit.selectAll()
+
+    def _on_filter_btn_clicked(self) -> None:
+        """虫眼鏡ボタン: クリックで入力欄の表示切替 (checkable で状態が反転済)。"""
+        if self.btn_filter.isChecked():
+            self._open_filter()
+        else:
+            self._reset_filter()
+
+    def _on_filter_escape(self) -> None:
+        """Esc in filter_edit: 絞込を解除して閉じ、フォーカスをテーブルに戻す。"""
+        self._reset_filter()
+
+    def _reset_filter(self) -> None:
+        """絞込検索を解除して入力欄を閉じる。サブフォルダ/タブ切替時にも呼ぶ。"""
+        # textChanged が走るので _filter_query は "" に。_apply_filter も走って
+        # 全行表示 + count_label 非表示になる。
+        self.filter_edit.blockSignals(True)
+        self.filter_edit.clear()
+        self.filter_edit.blockSignals(False)
+        self._filter_query = ""
+        self.filter_edit.setVisible(False)
+        self.btn_filter.setChecked(False)
+        self.filter_count_label.setVisible(False)
+        self.filter_count_label.setText("")
+        self._apply_filter()
+        # テーブル側に focus を戻す (空でない場合のみ。空の事件タブは無干渉)
+        if self.table.rowCount() > 0:
+            self.table.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _on_filter_text_changed(self, text: str) -> None:
+        self._filter_query = text
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """現在のテーブル行に対して `_filter_query` でフィルタを適用。
+        空白区切り AND 検索 (大小無視・部分一致)。`..` 行は常に表示。
+        フィルタ中は `X / Y 件` をラベルに出す。"""
+        query = self._filter_query.strip()
+        tokens = [t.lower() for t in query.split()] if query else []
+        visible_n = 0
+        total_n = 0
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if isinstance(item, _NameItem) and item.path == path:
-                self.table.setCurrentCell(row, 0)
-                return
+            it = self.table.item(row, 0)
+            if not isinstance(it, _NameItem):
+                continue
+            if it.is_parent:
+                self.table.setRowHidden(row, False)
+                continue
+            total_n += 1
+            if not tokens:
+                self.table.setRowHidden(row, False)
+                visible_n += 1
+                continue
+            name = it.path.name.lower()
+            ok = all(tok in name for tok in tokens)
+            self.table.setRowHidden(row, not ok)
+            if ok:
+                visible_n += 1
+        if tokens:
+            self.filter_count_label.setText(f"{visible_n} / {total_n} 件")
+            self.filter_count_label.setVisible(True)
+        else:
+            self.filter_count_label.setVisible(False)
+
+    def select_path_in_table(self, path: Path) -> None:
+        """指定パスの行を選択状態にする (rename 直後にフォーカスを保つため)。
+        `setCurrentCell` 単独だと currentIndex だけ動いて selection が
+        更新されない (= 点線囲いのみ、濃紺にならず itemSelectionChanged
+        も発火しない) ケースがあるため、ADR-24 と同じ
+        setCurrentIndex(NoUpdate) → select(ClearAndSelect|Rows) パターンで
+        確実にプレビュー連動も発火させる。"""
+        self._restore_selection_by_paths({str(path)})
 
     def refresh_current_view(self) -> None:
         """投入・rename・削除後に外部から呼ぶ: 現フォルダ再走査 + サブ件数更新。

@@ -47,6 +47,8 @@ from src.ui.settings_dialog import (
     load_inbox_sources,
 )
 from src.ui.title_bar import TitleBar
+from src.ui.update_banner import UpdateBanner, UpdateManager
+from src.__version__ import VERSION
 
 # 動的レイアウト用の定数 — _apply_pane_layout の視覚均等計算に使う。
 # 中央ペイン側で「ファイル一覧より左外」に取られる総幅 (= CasePane Name 列幅と
@@ -72,15 +74,18 @@ class MainWindow(QMainWindow):
         # CLI 引数で渡されたフォルダ (K-SystemZ 連携 / 「k-file で開く」の窓口)。
         # セッション復元の後で追加し、最後の引数をアクティブタブにする (M6a / ADR-17)。
         self._initial_paths: list[Path] = list(initial_paths or [])
-        # 自前の modal dialog (RenameDialog 等) を開いている間は preview を維持
-        # する用カウンタ。changeEvent の ActivationChange ハンドラが参照し、
-        # 外部アプリへの切替 (counter==0) のみ preview をクリアする (ADR-22 補足)。
-        self._internal_modal_count = 0
         self._build_layout()
         # _build_layout 完了後にセッション復元 + CLI 引数を順次オープン
         self._restore_window_size()
         self._restore_session()
         self._open_initial_paths()
+        # 起動時に裏で更新チェック (案②: GitHub Releases API → 新版あれば
+        # ステータスバーに通知バナー)。設定で OFF にできる。
+        self.update_manager = UpdateManager(
+            self, self.update_banner, local_version=VERSION,
+        )
+        if self.db.get_setting("auto_update_check_enabled", "1") == "1":
+            QTimer.singleShot(1500, self.update_manager.check_async)
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -203,6 +208,10 @@ class MainWindow(QMainWindow):
             "border-left: 1px solid #808080; padding-left: 6px;"
             " font-size: 9pt;"
         )
+        # 自動アップデート通知バナー (新版が公開されていれば表示) — path_status_label
+        # の左隣 (= showMessage 域の右端) に永続配置。普段は非表示。
+        self.update_banner = UpdateBanner()
+        sb.addPermanentWidget(self.update_banner)
         # stretch=0 (= addPermanentWidget の既定): showMessage の通常スロットが
         # 左を伸縮で確保し、path ラベルは内容に合わせた幅で右側に座る。これで
         # 「移動しました」などのトーストメッセージと共存できる。
@@ -259,6 +268,11 @@ class MainWindow(QMainWindow):
         # 事件タブ変更 / サブフォルダ構成変更でストリップの数字ボタンを再構築
         self.case_pane.subfoldersChanged.connect(self._sync_strip_targets)
         self._sync_strip_targets()
+        # refresh_current_view (= rename/inject/delete 後) で subfoldersChanged が
+        # 発火するので、これを契機に Name 列幅の Inbox/中央 同期 (ADR-18) を
+        # 再計算する。再描画中のサブフォルダボタンや breadcrumb のレイアウト
+        # 揺れで両ペインの viewport 幅がズレるケースの保険 (2026-05-27)。
+        self.case_pane.subfoldersChanged.connect(self._apply_pane_layout)
         # サブフォルダ +/- / ショートカット作成等の通知をステータスバーへ
         self.case_pane.actionStatus.connect(
             lambda msg: self.statusBar().showMessage(msg, 4000)
@@ -721,13 +735,13 @@ class MainWindow(QMainWindow):
     def _toggle_preview(self) -> None:
         """F3 / bar の F3 クリック: プレビュー開閉 (1:1 ↔ 1:2:2)。
 
-        閉じる時は QPdfDocument を明示的に close してファイルロックを解放
-        (見えなくなっても document を保持していると Win で削除/移動が
-        失敗する。バグ報告: 2026-05-25 本番テスト)。
+        ADR-22 (2026-05-25) では閉じる際に preview_pane.clear() を呼んで
+        QPdfDocument を解放し file lock を外していたが、ADR-23 (2026-05-26) の
+        QBuffer 経由 in-memory 読込みで lock が出なくなったため撤去 (2026-05-27)。
+        閉じている間も内部状態は維持され、F3 再表示で「選択は動かしていないのに
+        ファイル未選択表示になる」事故を防ぐ。
         """
         self._preview_visible = not self._preview_visible
-        if not self._preview_visible:
-            self.preview_pane.clear()
         self._apply_pane_layout()
 
     def eventFilter(self, obj, e) -> bool:  # noqa: N802 (Qt override)
@@ -742,22 +756,15 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, e)
 
     def changeEvent(self, e) -> None:
-        """ウインドウのアクティブ状態が変わった時に preview を閉じる。
+        """ADR-22 (2026-05-25) では「ウインドウ非アクティブ時に preview を閉じて
+        ファイルロックを外す」処理をここに置いていたが、ADR-23 (2026-05-26) で
+        PDF を QBuffer 経由の in-memory 読込みに切り替えてからは preview 表示中
+        でもファイルハンドルを保持しなくなったため、deactivate 時に閉じる必要が
+        無くなった。ユーザーが別アプリやデスクトップを触ってもプレビューが消えない
+        方が業務上便利という要望に応じて撤去 (2026-05-26)。
 
-        ユーザーが別アプリ (ブラウザ等) に切り替えた瞬間に PDF ハンドルが
-        解放されるので、Explorer から直接そのファイルを削除/移動できる。
-        次にアクティブに戻ってきても、現選択行で再 load されるだけで支障なし。
-
-        ただし「自前 modal dialog (rename 等) を開いた瞬間」も非アクティブ化と
-        して扱われるため、`_internal_modal_count > 0` の時はスキップして
-        preview を維持する (プレビューを見ながらのリネーム操作に対応)。
-        """
+        将来 ActivationChange を再利用する可能性に備えて override は残す。"""
         super().changeEvent(e)
-        if e.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
-            if self._internal_modal_count > 0:
-                return  # 自前 modal: preview 維持
-            if hasattr(self, "preview_pane"):
-                self.preview_pane.clear()
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -832,6 +839,10 @@ class MainWindow(QMainWindow):
     def _on_inbox_changed(self, count: int) -> None:
         self._inbox_count = count
         self._update_idle_status()
+        # Inbox refresh のたびに Name 列幅同期 (ADR-18) を再保証する。
+        # rename/inject/delete で行が再構成された後、scrollbar 出現等で
+        # viewport 幅が変わるケースの保険 (2026-05-27)。
+        self._apply_pane_layout()
 
     def _update_path_status(self, *_args) -> None:
         """ステータスバー右側の「選択ファイルのフルパス」表示を更新する。
@@ -945,6 +956,11 @@ class MainWindow(QMainWindow):
                 renamed_to=result.renamed_to,
                 original_name=result.original_name,
             )
+        # Inbox を refresh: 投入したファイルは消えるので、_populate の
+        # フォールバックで「同じ行 index の隣接 Inbox ファイル」に選択が移り、
+        # キー操作で次々 Alt+N を繰り返せる (= Inbox 連続さばき workflow)。
+        # 移動先 (case_pane) には focus を移さない (高頻度操作で Tab を毎回
+        # 戻すコストが大きいため、focus はソース側 = Inbox に残す)。
         self.inbox_pane.refresh()
         self.case_pane.refresh_current_view()
 
@@ -1192,18 +1208,15 @@ class MainWindow(QMainWindow):
             mode="rename",
             parent=self,
         )
-        # 自前 modal を示すカウンタを立てて preview を維持 (Issue 2 対策)
-        self._internal_modal_count += 1
-        try:
-            accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
-        finally:
-            self._internal_modal_count -= 1
+        accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
         if not accepted:
             return
         new_name = dlg.chosen_name()
 
-        # Win では QPdfDocument がファイルを掴んだままだと rename も失敗するため
-        # ダイアログ確定後・rename 実行直前にプレビューを閉じてハンドル解放
+        # ADR-23 (QBuffer 経由 in-memory PDF 読込み) でファイルロックは出ないため
+        # 必須ではないが、rename 結果のプレビューに切替えるためにここで一旦
+        # クリアしている (`_restore_selection_by_paths` が新パスを emit するので
+        # 直後に再 load される)。
         self.preview_pane.clear()
         result = file_ops.rename(path, new_name)
         if not result.ok:
@@ -1321,17 +1334,14 @@ class MainWindow(QMainWindow):
             mode="rename",
             parent=self,
         )
-        # 自前 modal を示すカウンタを立てて preview を維持 (Issue 2 対策)
-        self._internal_modal_count += 1
-        try:
-            accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
-        finally:
-            self._internal_modal_count -= 1
+        accepted = dlg.exec() == RenameDialog.DialogCode.Accepted
         if not accepted:
             return
         new_name = dlg.chosen_name()
 
-        # Inbox 側もダイアログ確定後・rename 実行直前にプレビューを閉じる
+        # ADR-23 後はファイルロック対策のための強制クリアは不要だが、rename 後の
+        # プレビュー切替を確実にするため一旦クリアする (新パスは
+        # `_restore_selection_by_paths` 経由で直後に再 load される)。
         self.preview_pane.clear()
         result = file_ops.rename(f.path, new_name)
         if not result.ok:

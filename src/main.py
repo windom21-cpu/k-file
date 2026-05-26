@@ -93,6 +93,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("k-file")
     app.setOrganizationName("k-file")
+    from src.__version__ import VERSION
+    app.setApplicationVersion(VERSION)
     app.setStyle("Windows")  # Fusion / windowsvista を避けて Win95 寄りに固定
     app.setStyleSheet(_load_stylesheet())
     # ツールチップは top-level の別 widget で `*` 継承外。同じ MS Gothic

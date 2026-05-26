@@ -302,6 +302,9 @@ class InboxPane(QWidget):
         # 後に同じ path を再選択する (watcher の auto refresh で行が再配置されて
         # 選択ファイルが勝手にずれる現象を防ぐ、2026-05-26)。
         prev_paths = self._collect_selected_paths()
+        # 選択していた path が消えた (削除など) ケースで「同じ行 index の隣接
+        # ファイル」へフォールバックするため、rebuild 直前の currentRow も控える。
+        prev_current_row = self.table.currentRow()
         # ソート ON のまま行を入れると挙動が不安定。OFF にして挿入後 ON に戻す。
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(files))
@@ -365,9 +368,15 @@ class InboxPane(QWidget):
         if not getattr(self, "_sort_initialized", False):
             self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
             self._sort_initialized = True
-        # ソート後の最終的な行配置で、保存しておいた path 群を再選択
+        # ソート後の最終的な行配置で、保存しておいた path 群を再選択。restore に
+        # 失敗した (= 選択中ファイルが全部消えた) ら同じ row index の隣接行へ
+        # フォールバックする (Del / Inbox 内 rename 等)。
+        # Inbox→事件移動のように「移動先 (case_pane) へ focus を移したい」場合は、
+        # 呼び出し側で focus_on_destination を別途呼んで上書きする想定。
         if prev_paths:
-            self._restore_selection_by_paths(prev_paths)
+            restored = self._restore_selection_by_paths(prev_paths)
+            if not restored:
+                self._select_adjacent_row(prev_current_row)
 
     def _collect_selected_paths(self) -> set[str]:
         """現在の選択行に対応するファイル path 文字列を集める。
@@ -385,13 +394,15 @@ class InboxPane(QWidget):
                 out.add(p)
         return out
 
-    def _restore_selection_by_paths(self, paths: set[str]) -> None:
+    def _restore_selection_by_paths(self, paths: set[str]) -> bool:
         """rebuild 後のテーブルから path が一致する行を再選択する。
         multi-select 対応。currentIndex を先に動かしてから select を発火する
         ことで、itemSelectionChanged 経由のプレビュー連動が新しい currentRow
-        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。"""
+        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。
+
+        Returns: 1 行以上選択できたか。呼び出し側が「全部消えた」検出に使う。"""
         if not paths:
-            return
+            return False
         rows: list[int] = []
         for row in range(self.table.rowCount()):
             it = self.table.item(row, 0)
@@ -400,12 +411,15 @@ class InboxPane(QWidget):
             p = it.data(Qt.ItemDataRole.UserRole)
             if isinstance(p, str) and p in paths:
                 rows.append(row)
-        if not rows:
-            return
         sel_model = self.table.selectionModel()
         model = self.table.model()
         if sel_model is None or model is None:
-            return
+            return False
+        if not rows:
+            # 旧選択 row index に残った selected を消す (別ファイルが濃紺で
+            # 出てしまうのを防ぐ)
+            sel_model.clearSelection()
+            return False
         # 先に currentIndex を更新 (selectionChanged は発火させない)
         sel_model.setCurrentIndex(
             model.index(rows[0], 0),
@@ -423,6 +437,22 @@ class InboxPane(QWidget):
             QItemSelectionModel.SelectionFlag.ClearAndSelect
             | QItemSelectionModel.SelectionFlag.Rows,
         )
+        return True
+
+    def _select_adjacent_row(self, hint_row: int) -> None:
+        """選択ファイルが全部消えた時のフォールバック: hint_row と同じ index
+        (テーブル末尾を超えたら末尾) の行を選択する。Del 等で同ペイン内に
+        次の操作対象が残っているケースを想定。"""
+        n = self.table.rowCount()
+        if n == 0:
+            return
+        target = min(max(hint_row, 0), n - 1)
+        it = self.table.item(target, 0)
+        if it is None:
+            return
+        p = it.data(Qt.ItemDataRole.UserRole)
+        if isinstance(p, str):
+            self._restore_selection_by_paths({p})
 
     def _show_file_menu(self, pos) -> None:
         """Inbox ファイルの右クリックメニュー (無視/開く/コピー/Explorer)。"""
@@ -517,7 +547,14 @@ class InboxPane(QWidget):
         self.refresh()
 
     def _on_selection(self) -> None:
-        """行選択が変わったら選択ファイルのパスを通知 (プレビュー用)。"""
+        """行選択が変わったら選択ファイルのパスを通知 (プレビュー用)。
+        clearSelection 後は currentRow が古い値のまま残るので、選択が
+        空の場合は currentRow を見ずに必ず空文字を emit する
+        (= プレビューが古いパスへ戻る事故を防ぐ、2026-05-26)。"""
+        sel_model = self.table.selectionModel()
+        if sel_model is None or not sel_model.selectedRows():
+            self.fileSelected.emit("")
+            return
         f = self._row_file(self.table.currentRow())
         self.fileSelected.emit(str(f.path) if f else "")
 
@@ -574,10 +611,10 @@ class InboxPane(QWidget):
             self.deleteRequested.emit(str(f.path))
 
     def select_path(self, path: Path) -> None:
-        """指定パスの行を選択 (rename 直後の選択維持用)。"""
-        target = str(path)
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item is not None and item.data(Qt.ItemDataRole.UserRole) == target:
-                self.table.setCurrentCell(row, 0)
-                return
+        """指定パスの行を選択 (rename 直後の選択維持用)。
+        `setCurrentCell` 単独だと currentIndex だけ動いて selection が
+        更新されない (= 点線囲いのみ、濃紺にならず itemSelectionChanged
+        も発火しない) ケースがあるため、ADR-24 と同じ
+        setCurrentIndex(NoUpdate) → select(ClearAndSelect|Rows) パターンで
+        確実にプレビュー連動も発火させる。"""
+        self._restore_selection_by_paths({str(path)})
