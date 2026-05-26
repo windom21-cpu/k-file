@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHeaderView,
@@ -298,6 +298,10 @@ class InboxPane(QWidget):
         self.inboxChanged.emit(self.file_count())
 
     def _populate(self, files: list[InboxFile]) -> None:
+        # rebuild 前に「選択中のファイル path 集合」を保存しておき、rebuild 完了
+        # 後に同じ path を再選択する (watcher の auto refresh で行が再配置されて
+        # 選択ファイルが勝手にずれる現象を防ぐ、2026-05-26)。
+        prev_paths = self._collect_selected_paths()
         # ソート ON のまま行を入れると挙動が不安定。OFF にして挿入後 ON に戻す。
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(files))
@@ -361,6 +365,64 @@ class InboxPane(QWidget):
         if not getattr(self, "_sort_initialized", False):
             self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
             self._sort_initialized = True
+        # ソート後の最終的な行配置で、保存しておいた path 群を再選択
+        if prev_paths:
+            self._restore_selection_by_paths(prev_paths)
+
+    def _collect_selected_paths(self) -> set[str]:
+        """現在の選択行に対応するファイル path 文字列を集める。
+        UserRole に埋め込んだパスを使うため、ソート後でも一意。"""
+        out: set[str] = set()
+        sel_model = self.table.selectionModel()
+        if sel_model is None:
+            return out
+        for ix in sel_model.selectedRows():
+            it = self.table.item(ix.row(), 0)
+            if it is None:
+                continue
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, str):
+                out.add(p)
+        return out
+
+    def _restore_selection_by_paths(self, paths: set[str]) -> None:
+        """rebuild 後のテーブルから path が一致する行を再選択する。
+        multi-select 対応。currentIndex を先に動かしてから select を発火する
+        ことで、itemSelectionChanged 経由のプレビュー連動が新しい currentRow
+        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。"""
+        if not paths:
+            return
+        rows: list[int] = []
+        for row in range(self.table.rowCount()):
+            it = self.table.item(row, 0)
+            if it is None:
+                continue
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, str) and p in paths:
+                rows.append(row)
+        if not rows:
+            return
+        sel_model = self.table.selectionModel()
+        model = self.table.model()
+        if sel_model is None or model is None:
+            return
+        # 先に currentIndex を更新 (selectionChanged は発火させない)
+        sel_model.setCurrentIndex(
+            model.index(rows[0], 0),
+            QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        # 次に selection を一括適用 → itemSelectionChanged は最終 currentRow で発火
+        selection = QItemSelection()
+        last_col = self.table.columnCount() - 1
+        for row in rows:
+            tl = model.index(row, 0)
+            br = model.index(row, last_col)
+            selection.select(tl, br)
+        sel_model.select(
+            selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
 
     def _show_file_menu(self, pos) -> None:
         """Inbox ファイルの右クリックメニュー (無視/開く/コピー/Explorer)。"""

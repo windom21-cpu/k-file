@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QSize, Qt, Signal
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices, QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -311,7 +311,13 @@ class _DropTabBar(QTabBar):
         if not paths:
             e.ignore()
             return
-        self._pane._on_case_tab_drop(target_idx, paths)
+        # Ctrl 押下中の D&D = Copy (Win Explorer 標準)。Qt は startDrag 側で
+        # Move|Copy を許可しているため、proposedAction で意図が読み取れる。
+        is_copy = e.proposedAction() == Qt.DropAction.CopyAction
+        if is_copy:
+            self._pane._on_case_tab_drop_copy(target_idx, paths)
+        else:
+            self._pane._on_case_tab_drop(target_idx, paths)
         e.acceptProposedAction()
 
 
@@ -417,6 +423,11 @@ class CasePane(QWidget):
     inboxDropToFolderRequested = Signal(str, list)     # (target_dir, src_paths)
     # 事件タブへの D&D = クロス事件 Move 要求
     caseTabDropMoveRequested = Signal(int, list)       # (target_tab_idx, src_paths)
+    # Ctrl+D&D = クロス事件 Copy 要求 (元ファイルは src 事件に残る)
+    caseTabDropCopyRequested = Signal(int, list)       # (target_tab_idx, src_paths)
+    # 右クリック「他事件へコピー / 移動 → サブフォルダ明示」(B 案)
+    # (op: "copy"|"move", target_dir: str, src_paths: list[str])
+    caseExplicitCrossCaseRequested = Signal(str, str, list)
     caseTabChanged = Signal(int, str, str)       # (idx, code, name)
     # サブフォルダ構成 (≒ Alt 割当) が変わった → 中央ストリップが再構築
     subfoldersChanged = Signal()
@@ -788,6 +799,14 @@ class CasePane(QWidget):
             target_idx, [str(p) for p in src_paths]
         )
 
+    def _on_case_tab_drop_copy(
+        self, target_idx: int, src_paths: list[Path]
+    ) -> None:
+        """事件タブに Ctrl+D&D された (= クロス事件 Copy)。Move とは別動線。"""
+        self.caseTabDropCopyRequested.emit(
+            target_idx, [str(p) for p in src_paths]
+        )
+
     # ───────── ビュー / ネストナビゲーション ─────────
 
     def _browse(self, view_id: int) -> None:
@@ -970,6 +989,10 @@ class CasePane(QWidget):
         self, entries: list[FileEntry], parent_path: Path | None = None
     ) -> None:
         """一覧を更新。フォルダ先頭・名前昇順、`..` は更に最先頭 (_NameItem.__lt__)。"""
+        # rebuild 前に選択中の path を保存しておき、rebuild 完了後に同 path
+        # 行を再選択する (rename/refresh 後に選択が別ファイルにずれる現象を
+        # 防ぐ、2026-05-26)。
+        prev_paths = self._collect_selected_paths()
         self.table.setSortingEnabled(False)
         has_parent = parent_path is not None
         self.table.setRowCount(len(entries) + (1 if has_parent else 0))
@@ -1047,6 +1070,59 @@ class CasePane(QWidget):
         if not getattr(self, "_sort_initialized", False):
             self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
             self._sort_initialized = True
+        # ソート後の最終行配置で、保存した path 群を再選択
+        if prev_paths:
+            self._restore_selection_by_paths(prev_paths)
+
+    def _collect_selected_paths(self) -> set[str]:
+        """現在の選択行の Path を文字列集合で取得。`..` 行は除外。
+        _NameItem.path が事実上のキー。"""
+        out: set[str] = set()
+        sel_model = self.table.selectionModel()
+        if sel_model is None:
+            return out
+        for ix in sel_model.selectedRows():
+            it = self.table.item(ix.row(), 0)
+            if isinstance(it, _NameItem) and not it.is_parent:
+                out.add(str(it.path))
+        return out
+
+    def _restore_selection_by_paths(self, paths: set[str]) -> None:
+        """rebuild 後のテーブルから path が一致する行を再選択する。
+        multi-select 対応。currentIndex を先に動かしてから select を発火する
+        ことで、itemSelectionChanged 経由のプレビュー連動が新しい currentRow
+        を見るように順序を保証する (選択 vs プレビュー食い違い対策、2026-05-26)。"""
+        if not paths:
+            return
+        rows: list[int] = []
+        for row in range(self.table.rowCount()):
+            it = self.table.item(row, 0)
+            if isinstance(it, _NameItem) and not it.is_parent:
+                if str(it.path) in paths:
+                    rows.append(row)
+        if not rows:
+            return
+        sel_model = self.table.selectionModel()
+        model = self.table.model()
+        if sel_model is None or model is None:
+            return
+        # 先に currentIndex を更新 (selectionChanged は発火させない)
+        sel_model.setCurrentIndex(
+            model.index(rows[0], 0),
+            QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        # 次に selection を一括適用 → itemSelectionChanged は最終 currentRow で発火
+        selection = QItemSelection()
+        last_col = self.table.columnCount() - 1
+        for row in rows:
+            tl = model.index(row, 0)
+            br = model.index(row, last_col)
+            selection.select(tl, br)
+        sel_model.select(
+            selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
 
     def _show_header_menu(self, pos) -> None:
         """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""
@@ -1074,7 +1150,8 @@ class CasePane(QWidget):
 
     def _show_row_menu(self, pos) -> None:
         """ファイル一覧 行の右クリックメニュー。
-        対象が `..` 行や未選択なら出さない。フォルダ行は「Explorer で開く」のみ。"""
+        対象が `..` 行や未選択なら出さない。フォルダ行は「Explorer で開く」のみ。
+        末尾に「他事件へコピー/移動」サブメニュー (B 案)。"""
         row = self.table.indexAt(pos).row()
         item = self.table.item(row, 0) if row >= 0 else None
         if not isinstance(item, _NameItem) or item.is_parent:
@@ -1098,7 +1175,78 @@ class CasePane(QWidget):
             )
         act_copy = menu.addAction("フルパスをコピー")
         act_copy.triggered.connect(lambda: self._copy_to_clipboard(str(item.path)))
+
+        # 「他事件へコピー / 移動」(B 案): multi-select 対応で全選択行を target に
+        sel_paths = [p for p, _ in self.selected_entries()]
+        if not sel_paths:
+            sel_paths = [item.path]
+        self._add_cross_case_submenus(menu, sel_paths)
+
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _add_cross_case_submenus(
+        self, parent_menu: QMenu, src_paths: list[Path]
+    ) -> None:
+        """「他事件へコピー / 移動」の 2 つのサブメニューを末尾に追加する。
+
+        各サブメニューは: 他の開いている事件タブ一覧 → そのサブフォルダ一覧
+        (+「事件フォルダ直下」)。発火時は `caseExplicitCrossCaseRequested`
+        シグナルで (op, target_dir, src_paths) を送る。
+        他事件タブが 0 件なら両サブメニューを disable 表示で残す (発見性のため)。
+        """
+        parent_menu.addSeparator()
+        current = self.current_case_path()
+        other_cases = [p for p in self._case_paths if p != current]
+
+        copy_menu = parent_menu.addMenu("他事件へコピー…")
+        move_menu = parent_menu.addMenu("他事件へ移動…")
+        if not other_cases:
+            copy_menu.setEnabled(False)
+            move_menu.setEnabled(False)
+            return
+
+        for case_root in other_cases:
+            code, name = _parse_case(case_root)
+            tab_label = f"{code}  {name}" if name else code
+            self._build_case_submenu(copy_menu, "copy", case_root, tab_label, src_paths)
+            self._build_case_submenu(move_menu, "move", case_root, tab_label, src_paths)
+
+    def _build_case_submenu(
+        self,
+        parent_menu: QMenu,
+        op: str,
+        case_root: Path,
+        tab_label: str,
+        src_paths: list[Path],
+    ) -> None:
+        """1 事件タブ分のサブメニュー: 事件直下 + サブフォルダ一覧。"""
+        case_submenu = parent_menu.addMenu(tab_label)
+        # 事件フォルダ直下
+        act_root = case_submenu.addAction("0  事件フォルダ直下")
+        act_root.triggered.connect(
+            lambda checked=False, td=case_root: self._emit_explicit(op, td, src_paths)
+        )
+        # サブフォルダ (現在の動的構成)
+        try:
+            scan = scan_case_folder(case_root)
+        except OSError:
+            return
+        for sf in scan.subfolders:
+            label = sf.name
+            if sf.alt_key:
+                label = f"{sf.alt_key}  {sf.name}"
+            act = case_submenu.addAction(label)
+            act.triggered.connect(
+                lambda checked=False, td=sf.path: self._emit_explicit(op, td, src_paths)
+            )
+
+    def _emit_explicit(
+        self, op: str, target_dir: Path, src_paths: list[Path]
+    ) -> None:
+        """メニュー項目クリック時のシグナル発火。"""
+        self.caseExplicitCrossCaseRequested.emit(
+            op, str(target_dir), [str(p) for p in src_paths]
+        )
 
     def _copy_to_clipboard(self, text: str) -> None:
         from PySide6.QtWidgets import QApplication

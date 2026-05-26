@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
@@ -231,6 +232,13 @@ class MainWindow(QMainWindow):
         # D&D: 事件A → 事件B タブ (クロス事件 Move)
         self.case_pane.caseTabDropMoveRequested.connect(
             self._on_case_tab_drop_move
+        )
+        self.case_pane.caseTabDropCopyRequested.connect(
+            self._on_case_tab_drop_copy
+        )
+        # 右クリック明示: 「他事件へコピー/移動 → サブフォルダ」(B 案)
+        self.case_pane.caseExplicitCrossCaseRequested.connect(
+            self._on_case_explicit_op
         )
         self.case_pane.caseTabChanged.connect(self._on_case_tab_changed)
         # 右クリック投入メニューが参照する Inbox 選択ファイルの getter
@@ -1010,26 +1018,28 @@ class MainWindow(QMainWindow):
             [Path(p) for p in src_paths], target, rel, suffix=" (D&D)",
         )
 
-    def _on_case_tab_drop_move(
-        self, target_idx: int, src_paths: list[str]
+    def _do_cross_case_op(
+        self,
+        op: str,                                       # "move" or "copy"
+        target_case_root: Path,
+        target_dir_resolver: Callable[[Path], Path],   # src → 投入先
+        src_paths: list[str],
     ) -> None:
-        """事件タブへの D&D = クロス事件 Move (multi-select 対応)。
+        """cross-case Move/Copy の共通ループ。`target_dir_resolver` は src ごと
+        に投入先フォルダを返す。D&D 経路では「同名サブフォルダ自動マッピング」
+        を渡し、右クリック明示経路では「固定 target_dir」を渡す。
 
-        各 src ごとに同名サブフォルダ (例: 元が 3_受信 なら target の 3_受信)
-        にマップ。なければ target 事件フォルダ直下に移す。衝突時は自動連番。
+        履歴 / ステータスバー / refresh は全てここで処理する。
         """
-        case_paths = self.case_pane._case_paths
-        if not 0 <= target_idx < len(case_paths):
-            return
-        # Move は shutil.move なので Win 側でファイルロックがあると失敗する
-        self.preview_pane.clear()
-        target_case_root = case_paths[target_idx]
         src_case_root = self.case_pane.current_case_path()
+        op_label = "コピー" if op == "copy" else "移動"
         if src_case_root is not None and target_case_root == src_case_root:
-            self.statusBar().showMessage("同じ事件タブには移動できません", 3000)
+            self.statusBar().showMessage(
+                f"同じ事件タブには{op_label}できません", 3000
+            )
             return
-
         target_code, _ = _parse_case(target_case_root)
+        op_fn = file_ops.copy if op == "copy" else file_ops.move
         ok_n = 0
         collided_n = 0
         fails: list[str] = []
@@ -1038,23 +1048,13 @@ class MainWindow(QMainWindow):
         for src_str in src_paths:
             src = Path(src_str)
             if not src.exists():
-                fails.append(f"{src.name}: 既に移動済")
+                fails.append(f"{src.name}: 元ファイルが消えています")
                 continue
-            # 同名サブフォルダにマップ (各 src ごとに別フォルダ可)
-            target_dir = target_case_root
-            if src_case_root is not None:
-                try:
-                    rel_parts = src.parent.relative_to(src_case_root).parts
-                except ValueError:
-                    rel_parts = ()
-                if rel_parts:
-                    candidate = target_case_root / rel_parts[0]
-                    if candidate.is_dir():
-                        target_dir = candidate
+            target_dir = target_dir_resolver(src)
             category = (
                 target_dir.name if target_dir != target_case_root else "(直下)"
             )
-            result = file_ops.move(src, target_dir)
+            result = op_fn(src, target_dir)
             if not result.ok:
                 fails.append(f"{src.name}: {result.error}")
                 continue
@@ -1064,7 +1064,7 @@ class MainWindow(QMainWindow):
             if result.collided:
                 collided_n += 1
             self._record_history(
-                action="move",
+                action=op,
                 src_path=str(result.src),
                 dst_path=str(result.dst) if result.dst else None,
                 case_code=target_code,
@@ -1072,16 +1072,19 @@ class MainWindow(QMainWindow):
                 renamed_to=result.renamed_to,
                 original_name=result.original_name,
             )
+        # Move は src 側のタブ表示が変わるため refresh が必須。Copy も target タブ
+        # が現在表示中の場合に再描画が必要なので一律呼ぶ。
         self.case_pane.refresh_current_view()
 
         if ok_n == 1 and not fails:
             collide = "  衝突を回避" if collided_n else ""
+            sep = "→" if op == "move" else "を"
             self.statusBar().showMessage(
-                f"{last_label} → {target_code} / {last_category}{collide} に移動",
+                f"{last_label} {sep} {target_code} / {last_category}{collide} に{op_label}",
                 4000,
             )
         elif ok_n >= 1:
-            msg = f"{ok_n} ファイルを {target_code} に移動"
+            msg = f"{ok_n} ファイルを {target_code} に{op_label}"
             if collided_n:
                 msg += f" (衝突回避 {collided_n} 件)"
             if fails:
@@ -1089,8 +1092,89 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(msg, 5000)
         else:
             self.statusBar().showMessage(
-                f"移動失敗: {'; '.join(fails[:2])}", 6000
+                f"{op_label}失敗: {'; '.join(fails[:2])}", 6000
             )
+
+    def _automap_resolver(
+        self, target_case_root: Path, src_case_root: Path | None
+    ) -> Callable[[Path], Path]:
+        """D&D 用の resolver: src の所属サブフォルダ名と同名のサブフォルダが
+        target_case_root にあればそこへ、なければ target_case_root 直下へ。"""
+        def resolve(src: Path) -> Path:
+            if src_case_root is None:
+                return target_case_root
+            try:
+                rel_parts = src.parent.relative_to(src_case_root).parts
+            except ValueError:
+                return target_case_root
+            if rel_parts:
+                candidate = target_case_root / rel_parts[0]
+                if candidate.is_dir():
+                    return candidate
+            return target_case_root
+        return resolve
+
+    def _on_case_tab_drop_move(
+        self, target_idx: int, src_paths: list[str]
+    ) -> None:
+        """事件タブへの D&D = クロス事件 Move (multi-select、同名サブフォルダ自動マッピング)。"""
+        case_paths = self.case_pane._case_paths
+        if not 0 <= target_idx < len(case_paths):
+            return
+        # Move は shutil.move なので Win 側でファイルロックがあると失敗する
+        self.preview_pane.clear()
+        target_case_root = case_paths[target_idx]
+        resolver = self._automap_resolver(
+            target_case_root, self.case_pane.current_case_path()
+        )
+        self._do_cross_case_op("move", target_case_root, resolver, src_paths)
+
+    def _on_case_tab_drop_copy(
+        self, target_idx: int, src_paths: list[str]
+    ) -> None:
+        """事件タブへの Ctrl+D&D = クロス事件 Copy (multi-select、自動マッピング)。
+        元ファイルは src 事件側に残る。Undo は dst を OS ごみ箱へ。"""
+        case_paths = self.case_pane._case_paths
+        if not 0 <= target_idx < len(case_paths):
+            return
+        # Copy は src を読むだけだが PDF ロック解放のため Move と同じく事前に clear
+        self.preview_pane.clear()
+        target_case_root = case_paths[target_idx]
+        resolver = self._automap_resolver(
+            target_case_root, self.case_pane.current_case_path()
+        )
+        self._do_cross_case_op("copy", target_case_root, resolver, src_paths)
+
+    def _on_case_explicit_op(
+        self, op: str, target_dir_str: str, src_paths: list[str]
+    ) -> None:
+        """右クリック「他事件へコピー/移動 → サブフォルダ」(B 案、明示指定経路)。
+
+        target_dir は呼び出し側が指定する固定パス。所属事件タブを逆引きして
+        共通ループへ流す。auto-mapping は使わない (D&D 経路と動線を分離)。
+        """
+        target_dir = Path(target_dir_str)
+        case_paths = self.case_pane._case_paths
+        target_case_root: Path | None = None
+        for cp in case_paths:
+            if target_dir == cp:
+                target_case_root = cp
+                break
+            try:
+                target_dir.relative_to(cp)
+                target_case_root = cp
+                break
+            except ValueError:
+                continue
+        if target_case_root is None:
+            self.statusBar().showMessage(
+                "投入先の事件タブが見つかりません", 3000
+            )
+            return
+        self.preview_pane.clear()
+        self._do_cross_case_op(
+            op, target_case_root, lambda _src: target_dir, src_paths,
+        )
 
     def _on_rename_in_case(self) -> None:
         """F2: 中央ペインで選択中のファイル/フォルダの名前変更。"""

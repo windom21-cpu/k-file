@@ -3,6 +3,7 @@
 actionごとの逆操作:
 - inject / move: 現在の dst パスにあるファイルを src パスへ shutil.move
 - rename:        dst (新名) → src (旧名) に rename
+- copy:          src は手付かずなので dst を OS ごみ箱へ送るだけ (cross-case Copy)
 - trash:         OS ごみ箱からの自動復元は OS 依存のため失敗扱い、
                  ユーザーに手動復元を案内 (HANDOVER §2 既定)
 
@@ -26,6 +27,8 @@ def undo_action(row: Mapping) -> tuple[bool, str]:
         return _undo_movelike(src_str, dst_str)
     if action == "rename":
         return _undo_rename(src_str, dst_str)
+    if action == "copy":
+        return _undo_copy(dst_str)
     if action == "trash":
         name = Path(src_str).name if src_str else "(不明)"
         return False, (
@@ -52,6 +55,28 @@ def _undo_movelike(src_str: str, dst_str: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"ファイルを戻せませんでした: {e}"
     return True, f"{dst.name} を元の位置へ戻しました"
+
+
+def _undo_copy(dst_str: str) -> tuple[bool, str]:
+    """copy を逆実行: dst を OS ごみ箱へ送る (src は元から手付かず)。
+
+    永久削除ではなく送信先 OS のごみ箱へ送ることで、Ctrl+Z を誤打しても
+    実体を救出できる (大容量フォルダのコピーを誤って Undo した時の保険)。
+    """
+    if not dst_str:
+        return False, "履歴に dst パスが欠けています"
+    dst = Path(dst_str)
+    if not dst.exists():
+        return False, f"取り消すべきコピー先が見つかりません: {dst}"
+    try:
+        from send2trash import send2trash
+    except ImportError as e:
+        return False, f"send2trash が利用できません: {e}"
+    try:
+        send2trash(str(dst))
+    except OSError as e:
+        return False, f"コピー先を取り消せませんでした: {e}"
+    return True, f"{dst.name} のコピーを OS のごみ箱へ送りました"
 
 
 def _undo_rename(src_str: str, dst_str: str) -> tuple[bool, str]:

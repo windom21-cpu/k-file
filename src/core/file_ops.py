@@ -216,6 +216,57 @@ def move(src: Path, dst_dir: Path, new_name: str | None = None) -> OpResult:
     )
 
 
+def copy(src: Path, dst_dir: Path, new_name: str | None = None) -> OpResult:
+    """src を dst_dir にコピー (元は残す)。衝突時は自動連番。
+
+    クロス事件 Copy (Ctrl+D&D) で使う。ファイルもフォルダも対応:
+    - ファイル: shutil.copy2 (mtime / 属性込み)
+    - フォルダ: shutil.copytree (再帰)
+    move と違い元ファイルは保持されるため、Undo は dst を削除するだけ。
+    """
+    src = Path(src)
+    dst_dir = Path(dst_dir)
+    original_name = src.name
+
+    if not src.exists():
+        return OpResult(
+            False, "copy", src, None, original_name, original_name, False,
+            error=f"コピー元が見つかりません: {src}",
+        )
+    try:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return OpResult(
+            False, "copy", src, None, original_name, original_name, False,
+            error=f"コピー先フォルダを作成できません: {e}",
+        )
+
+    name = new_name if new_name else original_name
+    err = validate_name(name)
+    if err:
+        return OpResult(
+            False, "copy", src, None, original_name, original_name, False,
+            error=err,
+        )
+
+    dst_path, collided = resolve_collision(dst_dir, name)
+
+    try:
+        if src.is_dir():
+            shutil.copytree(str(src), str(dst_path))
+        else:
+            shutil.copy2(str(src), str(dst_path))
+    except OSError as e:
+        return OpResult(
+            False, "copy", src, None, name, original_name, collided,
+            error=f"コピーに失敗しました: {e}",
+        )
+
+    return OpResult(
+        True, "copy", src, dst_path, dst_path.name, original_name, collided,
+    )
+
+
 def rename(src: Path, new_name: str) -> OpResult:
     """同フォルダ内の rename。衝突時は自動連番。"""
     src = Path(src)
