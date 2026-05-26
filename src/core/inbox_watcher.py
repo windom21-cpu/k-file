@@ -23,7 +23,7 @@ from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 # ブラックリストは「明らかに見せたくない」ものだけ:
 #   - 一時/未完了 (.tmp / .part / .crdownload / .download)
 #   - OS のシステムファイル (.DS_Store / Thumbs.db / desktop.ini)
-#   - ドット隠しファイル (Linux 流儀、ただし `.k-*` 系は k-systemz 連携で残す)
+#   - ドット隠しファイル (Linux 流儀、ただし `.k*` 系は k-systemz 連携で残す)
 INBOX_EXCLUDE_EXTENSIONS = {
     ".tmp", ".part", ".crdownload", ".download",
 }
@@ -42,13 +42,16 @@ def _is_visible_in_inbox(p: Path) -> bool:
     """Inbox に表示すべきかの判定 (ファイル/フォルダ共通)。
 
     - システム/一時ファイルは除外
-    - ドット隠しは除外 (ただし `.k-*` は k-systemz サブアプリ管理ファイルなので残す)
+    - ドット隠しは除外 (ただし `.k*` は k-systemz サブアプリ管理ファイルなので残す)
     """
     name = p.name
     if name in INBOX_EXCLUDE_NAMES:
         return False
-    # `.k-photo` 等は表示対象。それ以外のドットファイルは隠す
-    if name.startswith(".") and not name.startswith(".k-"):
+    # `.kphoto-config` / `.k-photo` 等の k-systemz 連携 dotfile は表示対象。
+    # k-systemz サブアプリの実拡張子は `.kphoto` / `.kevi` (ハイフン無し) だが、
+    # 将来 dotfile 形式を採る可能性も含めて広めに `.k*` で許容する
+    # (2026-05-26 K-SystemZ 側連携確認に基づく)。
+    if name.startswith(".") and not name.startswith(".k"):
         return False
     if p.is_file() and p.suffix.lower() in INBOX_EXCLUDE_EXTENSIONS:
         return False

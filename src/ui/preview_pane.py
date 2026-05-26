@@ -35,9 +35,12 @@ from src.ui.pane_header import PaneHeader
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff"}
 
 # テキストプレビュー対象 (生 JSON / 各種ログ / メモ 等)。
-# .k-photo (k-systemz サブアプリの JSON 一時保存) も対象。
+# k-systemz サブアプリの保存形式も JSON ベースなので整形プレビューする:
+#  - K-photo:  `.kphoto`
+#  - K-evi:    `.kevi`
+# 旧 `.k-photo` (ハイフン入り) は後方互換で残す (2026-05-26 K-SystemZ 連携確認)。
 _TEXT_EXTS = {".txt", ".log", ".md", ".csv", ".tsv", ".ini", ".cfg"}
-_JSON_EXTS = {".json", ".k-photo"}
+_JSON_EXTS = {".json", ".kphoto", ".kevi", ".k-photo"}
 
 # 大きいファイルを開いた時の保護: 先頭 N バイトのみ読む
 _TEXT_PREVIEW_CAP = 64 * 1024
