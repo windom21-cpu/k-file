@@ -6,14 +6,14 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M5d (Win 2 回目検証フォロー + cross-case Copy + K-SystemZ 連携詰め) 完了 (2026-05-26)。次は β タグ (v0.1.0-beta.1) + 自動アップデート機構の検討**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証で残バグ + 新機能要望を M5d で消化
+- 現在地: **M5e (β タグ準備セッション) 完了 → `v0.1.0-beta.1` を 2026-05-27 にタグ切り済 (prerelease)。GitHub Releases に zip 公開、β 業務並走テスト待ち**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証で残バグ + 新機能要望を M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) を実装 → β タグ切り
   - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
-- 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと)
-- テスト: 67 件 (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py`) 全緑
+- 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
+- テスト: **102 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py`) 全緑
 
 ---
 
@@ -296,9 +296,39 @@
     フォルダの Inbox → 事件サブフォルダ移動、IPC によるウインドウ単一性、日本語
     フォルダ名 (㈱、㊗ 等) のパス解決、case_code 前方一致衝突 — いずれも実環境で
     支障なし。残るは β タグ + 自動アップデート機構の検討のみ
-- **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応 (M6a 完了)、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (M6a 完了)、PyInstaller `--onedir` + GitHub Actions ビルド (M5c 完了)、Win 機で業務並走 → v1.0 stable
+- **M5e β タグ準備 polish + 自動アップデート (✅ 2026-05-27 完了、`v0.1.0-beta.1` タグ切り)**:
+  Win 機 β 配布前の最終 polish と、ユーザー要望「自分で DL + 古いの消すのがだるい」を
+  受けた自動アップデート機構 案② の実装。詳細 §7 (M5e セクション)。主要点:
+  - **自動アップデート機構 案② 実装 (ADR-27)**: 起動時に裏で GitHub Releases API
+    チェック → 新版あれば status bar に通知バナー → 「更新...」クリックで zip 自動 DL
+    (進捗ダイアログ) → 「再起動して適用」で updater バッチ生成 + detached 起動 +
+    k-file 終了 → updater が旧フォルダ退避 + zip 展開 + 新版起動 + .old 削除
+  - **`v0.1.0-beta.1` タグ切り (1ff5e87)**: CI 成功で Releases に prerelease として
+    `k-file-windows.zip` upload 済。これ以降の更新は自動アップデート通知が走る
+  - **ファイル名 絞込検索 (Ctrl+F、ADR-26)**: 中央ペイン breadcrumb 右端に 🔍 アイコン
+    + 折り畳み式 LineEdit。空白区切り AND 検索 (大小無視 部分一致)、件数表示
+    「N / M 件」、サブフォルダ/タブ切替で自動クリア
+  - **defensive preview clear の撤回 (ADR-28)**: ADR-22 で多数置いた防御 clear() を
+    ADR-23 (QBuffer in-memory) で不要になった箇所から撤去。`changeEvent` の
+    ActivationChange と F3 close で preview を維持 → ウインドウ外クリックや別アプリ
+    切替で preview が消えなくなり業務感が向上
+  - **選択追従 + プレビュー連動 修正**: `_restore_selection_by_paths` を bool 返却化
+    + 旧選択クリア、`_populate` に「同 row index 隣接行」フォールバック (削除/移動後)、
+    `select_path_in_table` / `select_path` を `_restore_selection_by_paths` に統一
+    (= 点線囲いのみ・濃紺なし事故の根治)、`_on_selection` / `_on_table_selection`
+    で選択 0 件なら必ず "" emit (clearSelection 後の stale path 再 emit 防止)
+  - **Inbox→事件投入後の focus 設計検討**: 当初「移動先 case_pane に focus 追従」で
+    実装 → 実際使ってみるとキーボード連続さばきで Tab 戻りが煩雑と判明 → **「ソース
+    側 (Inbox) で隣接行に fallback」に転換** (より高頻度の workflow を優先)
+  - **Name 幅同期の補強 (ADR-18)**: `case_pane.subfoldersChanged` /
+    `inbox_pane.inboxChanged` を `_apply_pane_layout` にフック (リネーム/移動後に
+    bal 崩れが起こり得るケースの保険)
+  - テスト: 67 → 102 件 (version 23 + updater 12 追加) 全緑
+- **M6 配布**: コマンドライン引数 `k-file.exe "path"` 対応 (M6a 完了)、Explorer 右クリック「k-file で開く」シェル拡張、任意フォルダをタブで開く汎用ファイラー化 (M6a 完了)、PyInstaller `--onedir` + GitHub Actions ビルド (M5c 完了)、**自動アップデート機構 案② (M5e で実装済)**、Win 機で業務並走 → v1.0 stable
   - ※フォルダ既定ハンドラの OS 乗っ取りは行わない (§15 ADR-2)。literal な「Explorer ダブルクリック→k-file」は、やるとしても Win 実機実験 → 上級者向け自己責任トグル止まり
-- **M6c (検討中) 自動アップデート機構**: GitHub Releases API ベースの「起動時 "更新あり" 通知」(案①、推奨) を β タグ切りと同時実装する想定。詳細 §8。差分更新 (案③) は法律実務系業務アプリでリスク高 (アップデート途中で起動不能) のため v1.0 安定期まで保留が無難
+- **M6c 自動アップデート機構 (✅ M5e で案② を実装完了)**: 起動時 GitHub Releases
+  API チェック → 通知 → 自動 DL + 自動適用 + 再起動。詳細 §15 ADR-27。差分更新 (案③)
+  は法律実務系業務アプリでリスク高 (アップデート途中で起動不能) のため v1.0 安定期まで保留
 
 ### 確定したショートカット体系 / サブフォルダ操作 (原仕様の F1〜F6 から変更済)
 - **サブフォルダボタン 左クリック**: そのサブフォルダの中身を表示 (閲覧のみ・ファイルは動かさない)
@@ -703,37 +733,150 @@
   `undo_ops._undo_copy` / 選択保持ヘルパ / 共通 cross-case ヘルパ にテスト追加
   すれば 70+ に増やせる、後続セッションでの課題)
 
+### M5e β タグ準備 polish + 自動アップデート機構 案② (2026-05-27 完了)
+
+β 配布前の最終 polish と、M6c 自動アップデート機構の案② 実装。`v0.1.0-beta.1`
+タグ切りまで完了。詳細 §15 ADR-26〜28。
+
+#### 主要点
+
+- ✅ **自動アップデート機構 案② 実装 (ADR-27)**:
+  - `src/__version__.py` 新設 (`VERSION = "0.1.0-beta.1"`)、`app.setApplicationVersion(VERSION)` 設定
+  - `src/core/version.py` — SemVer ライク比較 (`compare_versions` / `is_newer`、
+    dev < alpha < beta < rc < stable、23 unit test)
+  - `src/core/updater.py` — GitHub Releases API (`urllib`) + zip asset 選択 +
+    `default_updates_dir()` + `write_updater_batch()` + `install_dir_from_exe()`
+    (12 unit test、`urllib.request.urlopen` を `unittest.mock.patch` で差し替え)
+  - `src/ui/update_banner.py` — `UpdateBanner` (status bar 常駐) + `UpdateManager`
+    (QThread で check → QNetworkAccessManager で DL → `subprocess.Popen` で
+    updater detached 起動 → `self._main_window.close()`)
+  - `src/ui/settings_dialog.py` — 「自動アップデート」セクションに
+    「起動時にアップデートを確認する」QCheckBox (DB key
+    `auto_update_check_enabled`)
+  - `src/ui/main_window.py` — `update_banner` を status bar に
+    `addPermanentWidget`、起動 1.5 秒後に `update_manager.check_async()`
+  - updater バッチ (Win cmd.exe): `tasklist` で k-file.exe 消滅待ち (最大 30 秒)
+    → `ren` で旧フォルダを `.old` 化 → PowerShell `Expand-Archive` で zip 展開 →
+    `start ""` で新版起動 → `rmdir /S /Q` で `.old` 削除。CP932 encoding + CRLF
+- ✅ **`v0.1.0-beta.1` タグ切り (1ff5e87)**: CI 成功で GitHub Releases に
+  prerelease として `k-file-windows.zip` upload 済。これ以降の `v0.1.0-beta.X`
+  タグで自動アップデート機構が初発火する
+- ✅ **ファイル名 絞込検索 (Ctrl+F、ADR-26)**:
+  - 中央ペイン breadcrumb 行右端に 🔍 アイコン (常時表示、checkable QPushButton)
+  - クリック or Ctrl+F で QLineEdit (max-width 180px) がインライン展開、自動フォーカス
+  - Esc で解除 + 折り畳み、サブフォルダ/タブ切替で自動クリア
+  - 空白区切り AND 検索 (大小無視 部分一致)。`受領 田中` で「田中受領書.pdf」
+    「受領書(田中).pdf」両方ヒット。拡張子も検索対象 (`pdf` で絞れる)
+  - 件数表示「N / M 件」をフィルタ中だけ入力欄右に表示
+- ✅ **defensive preview clear の撤回 (ADR-28)**:
+  - `MainWindow.changeEvent` の `ActivationChange` 時 `preview_pane.clear()` 撤去
+    (ウインドウ外クリックでも preview 維持、ADR-23 で file lock 不要)
+  - `MainWindow._toggle_preview` の F3 close 側 `preview_pane.clear()` 撤去
+    (F3 再表示で前ファイル即表示)
+  - `_internal_modal_count` 連動コード (init / increment / decrement / changeEvent
+    での skip) を削除 (用途消失)
+  - rename/inject/delete/`<<` 直前の `preview_pane.clear()` は維持 (操作後の
+    preview 切替準備として有用)
+- ✅ **選択追従 + プレビュー連動 修正**:
+  - `_restore_selection_by_paths` を bool 返却化、マッチ 0 件で `clearSelection`
+    を呼んで旧 row index に残った selected フラグを除去
+  - `_populate` 末尾に「全部消えたら同 row index 隣接行を選択」フォールバック
+    (両ペイン)。`prev_current_row` を rebuild 前に保存しておき、復元に失敗したら
+    `_select_adjacent_row(prev_current_row)` で隣接行を選択
+  - `select_path_in_table` / `select_path` を `setCurrentCell` から
+    `_restore_selection_by_paths({str(path)})` に統一 (= ADR-24 と同じ
+    `setCurrentIndex(NoUpdate)` → `select(ClearAndSelect|Rows)` パターン)。
+    「点線囲いのみ・濃紺なし」事故の根治
+  - `_on_selection` (inbox) / `_on_table_selection` (case) で **選択 0 件なら必ず
+    `fileSelected.emit("")` 発火**。`clearSelection` 後の currentRow に残った
+    stale path がプレビューに戻る事故を防ぐ
+- ✅ **Inbox→事件投入後の focus 設計検討と決着**:
+  - 当初の問いは「Inbox の隣ファイルではなく**移動先 case pane の移動ファイル
+    そのもの**に focus が追従してほしい」 → `case_pane.focus_on_destination()` を
+    実装、view 切替 + select + setFocus 順序を `_apply_pane_layout` 〜
+    `setFocus` 〜 `_restore_selection_by_paths` の順 (= eventFilter による
+    inbox.clearSelection を間に挟むことで preview を正しく更新)
+  - **再度のユーザー検証で方針転換**: 実際使うと Inbox を連続でさばく workflow が
+    高頻度 → 毎回 case pane に focus が飛ぶと Tab で戻す手間が大きい →
+    `focus_on_destination` 撤去、`_populate` フォールバック (= Inbox 隣ファイル
+    自動選択) のみで運用
+- ✅ **Name 列幅同期の補強 (ADR-18 補強)**:
+  - `case_pane.subfoldersChanged` シグナル → `_apply_pane_layout` 直接接続
+    (refresh_current_view の都度発火するので、リネーム/移動後に再計算が走る)
+  - `inbox_pane.inboxChanged` → `_on_inbox_changed` 経由で `_apply_pane_layout`
+    を呼ぶよう追加
+  - リネーム/操作で table viewport が微妙にずれるケースの保険
+
+#### テスト
+- ✅ 102 件 pass (67 + version 23 + updater 12)。後続課題: M5e の UI 追加分
+  (UpdateBanner / 検索フィルタ / 選択 fallback) は手動検証のみ、ヘッドレス
+  unit テストを追加するなら別セッションで対応
+
+#### 配布
+- ✅ `v0.1.0-beta.1` prerelease in GitHub Releases、CI artifact
+  `k-file-windows.zip` 添付済
+- ユーザー差し替え (β.1 初回): Win 機で zip DL → 展開 → 起動
+- ユーザー差し替え (β.2 以降): 起動済 k-file の通知バナーから 1 クリック → 自動 DL
+  → 確認 → 再起動で完了
+
 ---
 
 ## 8. 次にやること
 
-### M5d 完了 (2026-05-26) → β タグ (v0.1.0-beta.1) + 自動アップデート機構の検討
+### M5e 完了 (2026-05-27) → `v0.1.0-beta.1` 切り済 → Win β 検証 + 業務並走
 
-2 回目 Win 機検証は 2026-05-26 セッションで実施し、検出された残バグ (F2 リネーム
-ロック残り / 選択ドリフト) は M5d で解消、要望機能 (cross-case Copy 2 系統、
-K-SystemZ サブアプリ拡張子) も追加。**`.kphoto`/`.kevi` プレビュー、デスクトップ
-フォルダ移動、IPC ウインドウ単一性、日本語名・case_code 衝突 はいずれも問題なし**
-と確認済 (ユーザー業務並走で 1 日分試行)。
+M5e で β 配布前の polish + 自動アップデート機構 案② 実装、`v0.1.0-beta.1` を
+2026-05-27 にタグ切り。CI 成功で Releases に prerelease + `k-file-windows.zip`
+upload 済。**ここから先は Win 機での β 業務並走テスト** に移行。
 
 #### 次セッションでやる優先順
-1. **β タグ + 自動アップデート機構 (案①、推奨)** ← セッション開始時に着手
-   - `v0.1.0-beta.1` を main に tag → CI が Release 作成 + zip upload (prerelease)
-   - 同時に「起動時 GitHub Releases API でバージョン比較 → 新版あれば status bar
-     + ダイアログで通知 + Releases ページを開くボタン」を実装
-   - 詳細案 §6 M6c および本セッションメモ (`memory/auto_update_deferred.md`)
-2. **(任意) cross-case Copy / 選択保持 / `_do_cross_case_op` のテスト追加**
-   - 67 件 → 70+ 件に
-3. **業務並走の長期テスト**: β タグ済 .exe で sk21 が 1〜2 週間使ってみる
-4. **β → v1.0 stable**: 大きい問題が出なければバージョン上げ
 
-#### 自動アップデート機構の 4 案 (案①〜④、§6 参照)
-- **案① 起動時 "更新あり" 通知**: ~1 日実装、リスクほぼゼロ、推奨
-- **案② ① + zip 自動 DL**: 2-3 日、低リスク
-- **案③ 差分更新 (tufup/PyUpdater)**: 1-2 週間 + コード署名、中リスク (壊れたら
-  アプリ全死)、v1.0 安定期以降
-- **案④ WinGet 配布**: 数時間 + 申請、低リスク、公開拡大時
-- 推奨は **案①** を β タグと同時実装。差分更新は法律実務系業務アプリにとって
-  リスクが高すぎる (アップデート途中で起動不能の可能性) ため保留が無難
+1. **Win β.1 検証 (= 業務並走の入口)** ← まず最優先
+   - Win 機で zip DL → 展開 → 起動 → 業務並走で 1〜2 週間使う
+   - **特に未 Win 検証の項目** (M5e で入った変更を実機で確認すべき):
+     - ウインドウ外クリックで preview が消えないこと (ADR-28 で撤回した
+       defensive clear がファイルロックを再発させないか)
+     - F3 close → 再 F3 で前ファイル即表示 (同上)
+     - Ctrl+F 絞込検索 が日本語ファイル名で動くこと
+     - 選択追従系 (rename/move/delete 後の隣接行 + プレビュー) が違和感なく動くこと
+     - Name 列幅同期がリネーム/移動操作で崩れないこと
+   - 自動アップデート機構自体は β.2 を出すまで実発火しない (= 今回は無動作確認のみ)
+2. **β.1 で問題が出れば β.2 → 自動アップデート初回実発火確認**:
+   - β.1 で残バグや要望が出る → 直す → `VERSION = "0.1.0-beta.2"` で再タグ切り
+   - β.1 .exe が稼働中なら、起動時通知バナー → 「更新...」 → 自動 DL → 再起動 → β.2
+     という**自動アップデート機構の本番初動作確認**になる
+3. **β → v1.0 stable**: 1〜2 週間の業務並走で大きい問題が出なければバージョン上げ
+
+### β タグの切り方 (覚え書き)
+
+1. `src/__version__.py` を `VERSION = "0.1.0-beta.X"` に編集
+2. commit + push
+3. `git tag -a v0.1.0-beta.X -m "..."` (annotated tag、`v` prefix 必須 CI 条件)
+4. `git push origin main --follow-tags`
+5. CI (`.github/workflows/build.yml`) が走り、`v*` タグでは Releases に
+   prerelease で zip upload される
+6. 次回 dev 開始時、必要なら `VERSION = "0.1.0-beta.(X+1)-dev"` に戻す
+
+### 自動アップデート機構の状況 (M5e で実装済の案②)
+
+- 起動 1.5 秒後に裏で `https://api.github.com/repos/windom21-cpu/k-file/releases`
+  を 1 リクエスト → 最新 release の zip asset を見て、ローカル version より新しければ
+  status bar 左に「🔔 v0.1.0-beta.X が公開されました [更新...] [×]」を表示
+- 「更新...」 → 確認 → `QNetworkAccessManager` で zip DL (進捗ダイアログ) →
+  `%APPDATA%/k-file/updates/k-file-windows.zip` 保存
+- DL 完了 → 確認ダイアログ「今すぐ再起動して適用しますか？」 → updater バッチを
+  `%APPDATA%/k-file/updates/apply_update.bat` に書き出し → `subprocess.Popen` で
+  detached 起動 → k-file 自身を `close()` で終了
+- updater バッチ (`src/core/updater.py::write_updater_batch`):
+  1. `tasklist | findstr k-file.exe` で k-file プロセスが消えるまで wait (最大 30 秒)
+  2. install_dir (= k-file/) を install_dir.old/ にリネーム
+  3. PowerShell `Expand-Archive` で zip を install_dir/ に展開
+  4. install_dir/k-file.exe を起動 (start /b で detach)
+  5. install_dir.old/ を削除 (失敗しても黙る)
+- dev 実行 (= `python -m src.main`、`sys.frozen` 無し) では適用ステップで
+  「dev mode では自動適用無効」メッセージを出して終わる (DL までは動く)
+- 設定ダイアログ「自動アップデート」セクションで OFF 可能 (DB key
+  `auto_update_check_enabled`)
 
 ### M5c 完了 (2026-05-25) → 2 回目検証 (2026-05-26 ✅ 完了) → M5d 反映 (済)
 
@@ -1192,6 +1335,101 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
 - **理由**: A は素早さ (ADR-7 と整合)、B は精度 (落とし先サブフォルダ具体指定)。
   両者は競合せず併設可能で、ユーザーの作業文脈に応じて使い分けられる。差分
   更新 (案 C/D) は実装複雑度に対して得るものが少ないと判断。
+
+### ADR-26: ファイル名 絞込検索は常時アイコン + Ctrl+F で展開 + 空白区切り AND (2026-05-27)
+- **経緯**: 事件フォルダ内に 100〜200 件の PDF が並ぶケースで、目的ファイルを
+  名前で素早く絞り込みたいというユーザー要望。
+- **検討案**:
+  - A. 常時表示の QLineEdit (場所食い、Win95 風には合うが scan/file 行を圧迫)
+  - B. Ctrl+F のみで表示する slide-down バー (発見性に欠ける)
+  - C. **常時 🔍 アイコン + クリック or Ctrl+F で展開** (発見性・場所節約の両立)
+- **決定**: C。中央ペイン breadcrumb 行の右端に虫眼鏡アイコン (`🔍`) を常時表示、
+  クリック or Ctrl+F で同じ行に QLineEdit がインライン展開 (max-width 180px)。
+  Esc で解除 + 折り畳み。`..` 行は常に表示。
+- **照合方法**: **空白区切り AND の部分一致 (大小無視)**。`受領 田中` で
+  「田中受領書.pdf」と「受領書(田中).pdf」両方ヒット。日本語の漢字検索は `.lower()`
+  no-op で問題なく動く。`pdf` で拡張子フィルタも可 (= 拡張子も検索対象)。
+- **件数表示**: フィルタ中だけ「N / M 件」を入力欄の右隣ラベルに出す。
+- **クリア戦略**: サブフォルダ切替 / 事件タブ切替で**自動クリア** (混乱防止)。
+  rename/inject/delete でリフレッシュされても**フィルタは継続** (= 作業中の絞込は維持)。
+- **Inbox 側は実装しない**: 中央ペイン (事件サブフォルダ内) の方が「200 件並ぶ」
+  シーンが多い。Inbox は元々 cutoff_days で日付絞り済で、検索の必要性が低い。
+
+### ADR-27: 自動アップデート機構は案② (起動時通知 + 自動 DL + バッチ適用 + 再起動) (2026-05-27)
+- **経緯**: HANDOVER §6 M6c で 4 案 (①通知のみ / ②自動 DL / ③差分更新 / ④WinGet)
+  を比較。当初は **案① (~1 日実装、リスクほぼゼロ)** を推奨していたが、ユーザー
+  反応「自分で DL + 古いの消すのがだるい」を受けて案②に格上げ。差分更新 (案③)
+  は法律実務系で「アップデート途中で起動不能」リスクが許容できないため依然却下。
+- **決定**: **案② 実装**。フロー:
+  1. 起動 1.5 秒後に `QThread` で `find_newer_release()` (`urllib` で GitHub
+     Releases API → ローカル VERSION と比較)
+  2. 新版あれば status bar に `UpdateBanner` を表示
+  3. 「更新...」 → `QMessageBox.question` → `QNetworkAccessManager` で zip DL
+     (進捗ダイアログ、キャンセル可)
+  4. DL 完了 → 再度 `QMessageBox.question` → updater バッチ生成 →
+     `subprocess.Popen(..., DETACHED_PROCESS)` で detached 起動 → `self.close()`
+  5. updater バッチ (`tasklist` で k-file.exe 消滅待ち → `ren` で旧フォルダを
+     `.old` 化 → PowerShell `Expand-Archive` で zip 展開 → `start ""` で新版起動 →
+     `rmdir /S /Q` で `.old` 削除)
+- **実装の要 / 落とし穴**:
+  - **install_dir 判定**: `getattr(sys, "frozen", False)` で PyInstaller 配布版を
+    判定し、`Path(sys.executable).parent` を install_dir とする。dev 実行
+    (`python -m src.main`) では None で適用ステップに進まない (DL 完了メッセージ
+    のみ)。
+  - **バッチエンコーディング**: cmd.exe は CP932/SJIS が安全。UTF-8 BOM 付では
+    動かないことがある。`batch_path.write_text(..., encoding="cp932")` 必須。
+  - **CRLF 改行**: cmd.exe バッチは CRLF。`"\r\n".join(...)` で生成。
+  - **GitHub Releases asset の redirect**: `RedirectPolicyAttribute` を
+    `NoLessSafeRedirectPolicy` に設定しないと S3 系の redirect で 302 のまま止まる。
+  - **キャンセル時の handling**: `QNetworkReply.NetworkError.OperationCanceledError`
+    だけは黙って return (エラー dialog を出さない)。
+  - **`%APPDATA%` の取得**: `os.environ.get("APPDATA")`。Win 以外では
+    `~/.config/k-file/updates/` にフォールバック (dev 実行用)。
+- **API パス**: `/releases` (全 release リスト) を使う。`/releases/latest` だと
+  prerelease がスキップされて β.X 同士の更新通知が出ないため。先頭 (= published_at
+  降順) の zip asset 付き release を採用、ローカル VERSION と `is_newer` で比較。
+- **バージョン比較 (`src/core/version.py`)**: SemVer ライク。`dev < alpha < beta <
+  rc < stable`。"dev" は特例で alpha より下に位置 (`_pre_key` で `(-1, 0, "")`)。
+  これで開発中ビルド (`VERSION = "0.1.0-dev"`) も β タグで「更新あり」検知が走る。
+- **検証 hooks**: `tests/test_updater.py` で `urllib.request.urlopen` を
+  `unittest.mock.patch` で差し替え、API 通信なしで全フロー (パース・選択・
+  バージョン比較・バッチ生成) を unit test。Win 側 updater バッチの実動作確認は
+  β.2 を切った時の自動アップデート初動が事実上の本番テスト。
+- **理由**: 案① と比べて実装工数 +1 セッション程度で、ユーザー手間が劇的に減る
+  (DL + 古いの削除 + 新版起動が 1 クリック化)。案③ の差分更新リスクを避けつつ、
+  実用的な UX を確保。
+
+### ADR-28: ADR-22 の defensive preview clear を ADR-23 後に撤回 (2026-05-27)
+- **経緯**: ADR-22 (M5c、2026-05-25) で PDF プレビューのファイルロック対策として、
+  `changeEvent` (ウインドウ非アクティブ)、F3 close、操作前 (rename/inject/delete)、
+  ペイン focus 切替 など複数箇所で `preview_pane.clear()` を呼ぶ defensive
+  クリアを入れた。ADR-23 (M5d、2026-05-26) で根本対策 (QBuffer 経由 in-memory
+  読込み) を入れたことで、表示中もファイルロックが発生しない構造になった。
+  しかし defensive clear はそのまま残っており、**ユーザーがウインドウ外を
+  クリックする度にプレビューが消える** という UX の劣化が顕在化。
+- **判断材料**:
+  - ADR-23 で `read_bytes()` 完了時に OS ファイルハンドルは閉じている (PDFium も
+    QBuffer 経由なのでファイルを掴まない)
+  - 画像 `QPixmap(str(p))` は load 完了時に handle close
+  - text/JSON は Python `read_text` で同上
+  - → preview 表示中もファイルは常時 free
+- **決定**: 以下 2 箇所の `preview_pane.clear()` を撤去:
+  - `MainWindow.changeEvent` の `ActivationChange` (= 非アクティブ化) 時
+  - `MainWindow._toggle_preview` の閉じる側 (= F3 で隠す時)
+  - 連動で `_internal_modal_count` (rename modal 中の clear スキップ用カウンタ)
+    も用途消失で削除。
+- **残す clear()**: rename/inject/delete/cross-case/<<デスクトップ などの**操作直前**
+  は引き続き呼ぶ。これは「ファイルロック解放」目的ではなく「操作後の preview を
+  新しいパスに切り替える前のリセット」目的。ペイン Tab 切替時の
+  `_focus_inbox_table` / `_focus_case_table` も意図的に維持 (= 操作 pane が変わったら
+  preview もリセット)。
+- **理由**: ADR-23 を信頼することで、業務操作の最中にプレビューが「ちらつかず・
+  消えず」見え続ける状態にする (ユーザーが別アプリを参照しながら k-file の
+  プレビューを横目で見るような workflow に必要)。
+- **リスク**: 理論上は ADR-23 が file lock 解放を完全に担保しているはずだが、
+  万一 PDFium の lazy load などで未知の handle 残留があれば、ウインドウ外
+  クリック中に Explorer から rename/delete を試みると失敗する。Win β 検証で
+  実機確認。再発したら片方だけ clear() を戻す段階的フォールバック可能。
 
 ---
 
