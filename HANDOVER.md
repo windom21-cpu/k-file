@@ -6,14 +6,16 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M5e (β タグ準備セッション) 完了 → `v0.1.0-beta.1` を 2026-05-27 にタグ切り済 (prerelease)。GitHub Releases に zip 公開、β 業務並走テスト待ち**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証で残バグ + 新機能要望を M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) を実装 → β タグ切り
+- 現在地: **M5f (フリーズ根治セッション Phase 1) 完了 (2026-05-29)。プレビュー読込を別スレッド化してフリーズを修正、main push 済 (commit `5a46013`、CI 成功 = artifact `k-file-windows` 48MB)。ユーザーが実機で様子見中**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f で「ファイルクリック / 移動・リネーム後にアプリが固まる」フリーズを調査・Phase 1 修正
+  - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O (read/stat) がメインスレッドをブロック** (詳細 §15 ADR-29)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
   - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
+  - **本機 = Win 機**。CLAUDE.md / 旧記述の「本機 = Linux」は実態とズレ (2026-05-29 ユーザー確認、開発も配布確認もこの Win 機で実施)
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **102 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py`) 全緑
+- テスト: **112 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py`) 全緑。ローカル Win venv で実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
 
 ---
 
@@ -823,6 +825,47 @@
 
 ## 8. 次にやること
 
+### M5f フリーズ根治 Phase 1 完了 (2026-05-29) → 実機様子見 → 残れば Phase 2
+
+β.1 配布後、ユーザー業務並走で「**ファイルをクリックした時 / 移動・リネームした
+直後にアプリが固まり、強制終了せざるを得ない**」フリーズが頻発と報告。調査の結果、
+症状は「見た目は普通だが無反応」= **メインスレッドが同期 I/O でブロック**される
+典型 (例外クラッシュではない。`error.log` は `SystemExit:0` のみで crash 痕跡なし)。
+
+**根本原因** (詳細 §15 ADR-29):
+- 事件フォルダは **Dropbox をレジストリで X ドライブにマウント**して X: 経由参照。
+  Dropbox の「オンラインのみ (placeholder)」ファイルは **read した時に** hydrate
+  完了まで長時間ブロックする (stat だけなら比較的速い)。
+- preview_pane が PDF/画像/テキストの read+デコードを**メインスレッドで同期実行**
+  していた = ファイルをクリックする度に最高頻度で X: read。これが主犯。
+- Inbox は全てローカルなので無傷。「事件 (X:) 側操作でだけ固まる」非対称と一致。
+
+**Phase 1 (完了・push 済 commit `5a46013`)**: preview の読込を `QThreadPool` worker
+へ全面的に逃がした (ADR-29)。stat/read/QImage デコードは worker、main は結果から
+GUI 構築のみ。seq 採番で連打 stale 破棄、150ms 超で「読込中...」表示。テスト
+`tests/test_preview.py` 10 件追加 (全 112 件 green)。CI 成功 = artifact
+`k-file-windows` (48MB)。
+
+#### 次セッションでやる優先順
+
+1. **Phase 1 の実機検証** (ユーザーが様子見中) ← まず最優先
+   - artifact zip を DL → 差し替え → 業務で使う (今回はタグなし push のため
+     **Release は作られず自動アップデート通知は出ない。手動 DL 差し替え**)
+   - ✅ 確認: ファイルクリック → プレビューで**固まらなくなったか** (Phase 1 の本命)
+   - △ 確認: **移動・リネーム直後の固まり**が軽くなったか / まだ残るか
+2. **Phase 2 (残った場合): 事件フォルダ走査の非同期化**
+   - `core/folder_scanner.scan_case_folder` / `list_folder` を worker へ。呼び出し点:
+     `case_pane._load_case` (タブ切替)、`_browse`/`_show_current`、`refresh_current_view`
+     (move/rename/inject/delete 後)、右クリック `_build_case_submenu`。
+   - case_pane.py (1804 行・最複雑) のナビ非同期化は高リスク (self._scan セット→
+     ボタン再構築→browse の順序依存、走査中クリック競合)。preview と同じ seq-guard
+     パターンで。安全な前哨として `scan_case_folder` の per-subfolder カウントを
+     `iterdir()+is_file/is_dir` (entry 毎 2 stat) → `os.scandir()` (dirent キャッシュ)
+     に変える純関数最適化も有効 (要 folder_scanner テスト追加、現状未整備)。
+3. **Phase 3 (任意の掃除)**: IPC の同期待ち (`ipc.py` の `waitForReadyRead(500)` +
+   `waitForDisconnected(200)`、K-SystemZ 連打で累積) の非同期化 + `main.py:148` の
+   `except BaseException` が正常終了 (`SystemExit:0`) まで error.log に書く副次バグ修正。
+
 ### M5e 完了 (2026-05-27) → `v0.1.0-beta.1` 切り済 → Win β 検証 + 業務並走
 
 M5e で β 配布前の polish + 自動アップデート機構 案② 実装、`v0.1.0-beta.1` を
@@ -1430,6 +1473,48 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   万一 PDFium の lazy load などで未知の handle 残留があれば、ウインドウ外
   クリック中に Explorer から rename/delete を試みると失敗する。Win β 検証で
   実機確認。再発したら片方だけ clear() を戻す段階的フォールバック可能。
+
+### ADR-29: プレビュー読込はメインスレッドでなく QThreadPool worker で行う (2026-05-29)
+- **経緯**: β.1 業務並走で「ファイルをクリックすると / 移動・リネーム直後に
+  アプリが固まり強制終了せざるを得ない」フリーズが頻発と報告。症状は「見た目は
+  普通だが無反応」= メインスレッドが同期 I/O でブロックされる典型 (`error.log` に
+  crash 痕跡なし、`SystemExit:0` のみ = 純粋なハング)。
+- **環境前提 (原因の鍵)**: 事件フォルダは **Dropbox をレジストリで X ドライブに
+  マウント**して X: 経由でアクセスしている (Inbox は全てローカル)。Dropbox の
+  「オンラインのみ (placeholder)」ファイルは、**`stat` (サイズ/更新日) では中身を
+  DL せず比較的速い**が、**`read` (実体読込) した瞬間に hydrate が走り数十秒〜
+  長時間ブロック**する。「事件 (X:) 側操作でだけ固まり、Inbox は無傷」という
+  観測された非対称はこれで説明できる。
+- **主因の特定**: `preview_pane` が PDF (`read_bytes`)、画像 (`QPixmap(str(p))`)、
+  テキスト/JSON (`read_text`) の **読込 + デコードをメインスレッドで同期実行**して
+  いた。プレビューは「ファイルをクリックする度」に発火 = 最高頻度の X: read。
+  移動・リネーム直後の固まりも、`refresh_current_view` → 選択復元 → `fileSelected`
+  → preview が対象を同期 read、が引き金。
+- **決定 (Phase 1)**: preview の読込を `QThreadPool` + `QRunnable` worker に逃がす。
+  - `_load_preview(path, seq)` = worker 側純 I/O 関数。stat / read_bytes /
+    `QImage` デコードを全てバックグラウンドで実行 (`QImage` は GUI 非依存なので
+    worker 可。`QPixmap` は main 専用なので結果を main で `QPixmap.fromImage`)。
+  - `show_file` は seq を採番して worker を起動するだけ。結果は `_on_loaded` で
+    受け、**seq が最新の時だけ描画** (クリック連打で古い読込が後から上書きするのを
+    破棄)。
+  - 旧 `_show_pdf/_show_image/_show_text/_show_json` → `_render_pdf/_render_image/
+    _render_text` に再編 (worker 結果から GUI 構築するだけ、I/O なし)。ADR-23
+    (QBuffer 経由 PDF) は維持。`_update_info` は worker が stat 済みの size/mtime を
+    受け取り main で再 stat しない。
+  - 読込が **150ms を超えた時だけ「読込中...」表示** (QTimer)。ローカル即時読込では
+    出ないのでチラつかない。**確認ダイアログは追加しない** (規約遵守、モーダルに
+    しない)。
+- **理由**: 業務凍結級バグであり機能追加より優先 (CLAUDE.md)。メインスレッドから
+  X: の重い read を完全に除けば、Dropbox が固まってもアプリは応答し続ける。
+- **残作業 (Phase 2/3)**: 事件フォルダ走査 (`scan_case_folder`/`list_folder`) は
+  まだメインスレッド同期。stat 主体で placeholder でも比較的速いため Phase 1 より
+  優先度は下がるが、移動・リネーム後の固まりが実機で残るなら非同期化する (§8 参照)。
+  IPC 同期待ちと main.py の SystemExit 誤ログは Phase 3 の掃除候補。
+- **テスト**: `tests/test_preview.py` 10 件 (worker `_load_preview` の種別判定 /
+  読込 / cp932 フォールバック / 切詰め / 破損画像エラー)。全 112 件 green。
+- **リスク**: worker と main のスレッド分離で Qt オブジェクト所有権の境界を誤ると
+  クラッシュしうる (QImage=worker / QPixmap・QPdfDocument=main を厳守)。連打時の
+  seq 破棄が正しく効くかは実機のクリック連打で確認。
 
 ---
 
