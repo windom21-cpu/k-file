@@ -6,16 +6,17 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M5f (フリーズ根治セッション Phase 1) 完了 (2026-05-29)。プレビュー読込を別スレッド化してフリーズを修正、main push 済 (commit `5a46013`、CI 成功 = artifact `k-file-windows` 48MB)。ユーザーが実機で様子見中**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f で「ファイルクリック / 移動・リネーム後にアプリが固まる」フリーズを調査・Phase 1 修正
-  - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O (read/stat) がメインスレッドをブロック** (詳細 §15 ADR-29)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
+- 現在地: **M5f Phase 2① 完了 (2026-06-01)。フリーズ再発を受け、事件フォルダ走査を `os.scandir` 化して X:(Dropbox) の metadata 呼び出しを大幅削減、main push 済 (commit `7b953d9`、CI 成功 = artifact `k-file-windows` 48MB)。ユーザーが実機で効果測定中**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化
+  - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O がメインスレッドをブロック** (詳細 §15 ADR-29/ADR-30)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
+  - **Phase 2① の知見 (ADR-30)**: Phase 1 で消えなかったのは、固まるのが「選択→プレビュー」(I/O 無し) ではなく **一覧の構築 = 事件フォルダ走査** だったため。`Path.iterdir()` + 個別 `stat/is_dir/is_symlink` で 1 事件あたり数千回の metadata 呼び出しが X: を直列ブロックしていた (「stat 単発は速いが stat の山は遅い」)。`os.scandir` 化で列挙数回に削減 (出力は完全同一・非同期化なし = 軸A「作業量を減らす」)
   - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
   - **本機 = Win 機**。CLAUDE.md / 旧記述の「本機 = Linux」は実態とズレ (2026-05-29 ユーザー確認、開発も配布確認もこの Win 機で実施)
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **112 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py`) 全緑。ローカル Win venv で実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
+- テスト: **122 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py`)。Win venv は symlink 2 件 skip で **120 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
 
 ---
 
@@ -825,7 +826,7 @@
 
 ## 8. 次にやること
 
-### M5f フリーズ根治 Phase 1 完了 (2026-05-29) → 実機様子見 → 残れば Phase 2
+### M5f フリーズ根治 Phase 1 (2026-05-29) + Phase 2① (2026-06-01) 完了 → 実機効果測定 → 残れば Phase 2②
 
 β.1 配布後、ユーザー業務並走で「**ファイルをクリックした時 / 移動・リネームした
 直後にアプリが固まり、強制終了せざるを得ない**」フリーズが頻発と報告。調査の結果、
@@ -846,22 +847,32 @@ GUI 構築のみ。seq 採番で連打 stale 破棄、150ms 超で「読込中..
 `tests/test_preview.py` 10 件追加 (全 112 件 green)。CI 成功 = artifact
 `k-file-windows` (48MB)。
 
+#### Phase 2① (完了・push 済 commit `7b953d9`)
+§8 で「Phase 2 の安全な前哨」として予告した純関数最適化を実施。`folder_scanner` を
+`os.scandir()` 化し、`is_dir()/is_file()/stat()` を `os.DirEntry` キャッシュから取って
+metadata syscall を「ファイル数 × 数回」→「列挙数回」に削減 (Win)。**出力 (CaseScan/
+FileEntry) は完全同一・`case_pane` 無改造・非同期化なし** (= 軸A「作業量を減らす」、
+軸B 非同期化は残った場合のみ)。`tests/test_folder_scanner.py` 10 件新規 (従来
+folder_scanner はテスト未整備だった)。全 122 件中 Win venv 120 passed/2 skipped。詳細 §15 ADR-30。
+
 #### 次セッションでやる優先順
 
-1. **Phase 1 の実機検証** (ユーザーが様子見中) ← まず最優先
-   - artifact zip を DL → 差し替え → 業務で使う (今回はタグなし push のため
-     **Release は作られず自動アップデート通知は出ない。手動 DL 差し替え**)
-   - ✅ 確認: ファイルクリック → プレビューで**固まらなくなったか** (Phase 1 の本命)
-   - △ 確認: **移動・リネーム直後の固まり**が軽くなったか / まだ残るか
-2. **Phase 2 (残った場合): 事件フォルダ走査の非同期化**
-   - `core/folder_scanner.scan_case_folder` / `list_folder` を worker へ。呼び出し点:
-     `case_pane._load_case` (タブ切替)、`_browse`/`_show_current`、`refresh_current_view`
-     (move/rename/inject/delete 後)、右クリック `_build_case_submenu`。
-   - case_pane.py (1804 行・最複雑) のナビ非同期化は高リスク (self._scan セット→
-     ボタン再構築→browse の順序依存、走査中クリック競合)。preview と同じ seq-guard
-     パターンで。安全な前哨として `scan_case_folder` の per-subfolder カウントを
-     `iterdir()+is_file/is_dir` (entry 毎 2 stat) → `os.scandir()` (dirent キャッシュ)
-     に変える純関数最適化も有効 (要 folder_scanner テスト追加、現状未整備)。
+1. **Phase 2① の実機効果測定** (ユーザーが測定中) ← まず最優先
+   - artifact zip (`k-file-windows-20260601-7b953d9.zip` をデスクトップに保存済) を
+     DL → 差し替え → 業務で使う (タグなし push のため **Release は作られず自動
+     アップデート通知は出ない。手動 DL 差し替え**)
+   - ✅ 確認: タブ切替 / サブフォルダを開く / 移動・リネーム直後 で**固まらなくなったか**
+   - ユーザー観測「**いつも固まるフォルダは決まっている気がする**」→ 残った場合の切り分けに使う
+2. **Phase 2② (①で残った場合のみ): 重いフォルダの別処理**
+   - ①で全走査が安くなれば「操作後 refresh は毎回全走査 = 常に ground truth」の単純さを
+     保てる。残る場合の手は 2 つ: (a) 操作後 refresh の**差分更新** (走査ゼロ化。ただし
+     delta 計算の正しさ + 全走査経路との二重管理/モデル drift が新リスク)、(b) コールド
+     初回の**部分非同期** (preview と同じ seq-guard。非同期境界をデータ取得だけに限定し
+     `_populate`/選択復元は無改造、M5f Phase 1 のパターン流用)。
+   - case_pane.py (最複雑) のナビ全体非同期化は高リスク (self._scan セット→ボタン再構築
+     →browse の順序依存、走査中クリック競合)。**全体ではなく重いフォルダだけ**に寄せる。
+     呼び出し点: `_load_case` (タブ切替)、`_browse`/`_show_current`、`refresh_current_view`、
+     右クリック `_build_case_submenu`。
 3. **Phase 3 (任意の掃除)**: IPC の同期待ち (`ipc.py` の `waitForReadyRead(500)` +
    `waitForDisconnected(200)`、K-SystemZ 連打で累積) の非同期化 + `main.py:148` の
    `except BaseException` が正常終了 (`SystemExit:0`) まで error.log に書く副次バグ修正。
@@ -1507,14 +1518,56 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
 - **理由**: 業務凍結級バグであり機能追加より優先 (CLAUDE.md)。メインスレッドから
   X: の重い read を完全に除けば、Dropbox が固まってもアプリは応答し続ける。
 - **残作業 (Phase 2/3)**: 事件フォルダ走査 (`scan_case_folder`/`list_folder`) は
-  まだメインスレッド同期。stat 主体で placeholder でも比較的速いため Phase 1 より
-  優先度は下がるが、移動・リネーム後の固まりが実機で残るなら非同期化する (§8 参照)。
+  まだメインスレッド同期。**→ フリーズ再発で「stat は比較的速い」は単発の話で、
+  iterdir+個別 stat の "山" こそ主因と判明。2026-06-01 に scandir 化で対応した
+  (Phase 2①、ADR-30)。** 実機でなお残るなら差分更新/部分非同期 (Phase 2②、§8)。
   IPC 同期待ちと main.py の SystemExit 誤ログは Phase 3 の掃除候補。
 - **テスト**: `tests/test_preview.py` 10 件 (worker `_load_preview` の種別判定 /
   読込 / cp932 フォールバック / 切詰め / 破損画像エラー)。全 112 件 green。
 - **リスク**: worker と main のスレッド分離で Qt オブジェクト所有権の境界を誤ると
   クラッシュしうる (QImage=worker / QPixmap・QPdfDocument=main を厳守)。連打時の
   seq 破棄が正しく効くかは実機のクリック連打で確認。
+
+---
+
+### ADR-30: 事件フォルダ走査は os.scandir で metadata 一括取得する (Path.iterdir + 個別 stat を避ける) (2026-06-01)
+- **経緯**: ADR-29 (Phase 1) で preview 読込を非同期化したが、β 業務並走で**フリーズが
+  再発** (タスクキルが必要なハング)。再調査で、固まるのは「ファイル選択→プレビュー」
+  ではなく (それは `_on_table_selection` がパスを emit するだけで I/O 無し)、**一覧の
+  構築 = 事件フォルダ走査**だと判明。`case_pane` の `_load_case` (タブ切替) /
+  `_show_current` (サブフォルダ表示・descend) / `refresh_current_view` (移動・リネーム後)
+  が `scan_case_folder`/`list_folder` をメインスレッド同期実行していた。
+- **主因の精密化 (ADR-29 の訂正)**: ADR-29 は「stat は placeholder でも比較的速い」と
+  したが、`Path.iterdir()` は scandir 由来の stat 結果を捨てて `Path` を返すため、後段で
+  1 ファイルにつき `p.stat()` + `p.is_dir()` + `p.is_symlink()` の **3 回以上の metadata
+  syscall** が走る。さらに件数バッジ用に各サブフォルダを `iterdir()` して全ファイルに
+  `is_file()/is_dir()` (2 stat)。1 事件 (6 サブフォルダ × 数百ファイル) で **数千回の
+  metadata 呼び出し**が X:(Dropbox) のフィルタドライバを直列通過し、累積ブロックでハング
+  していた。「stat 単発は速い」は正しいが「stat の山」は遅い。
+- **決定 (Phase 2①)**: `folder_scanner` を `os.scandir()` ベースに置換。`os.DirEntry` は
+  ディレクトリ列挙 (Win の FindFirstFile/FindNextFile) の時点で属性・サイズ・日時を
+  取得済みでキャッシュするため、`is_dir()/is_file()/stat()` が **追加 syscall を生まない**
+  (Win)。metadata 呼び出しがファイル数 × 数回 → 列挙数回に激減。
+  - `_to_entry(Path)` → `_entry_from_dirent(os.DirEntry)`。`list_folder`/`scan_case_folder`
+    を scandir 化。**出力 (CaseScan/FileEntry) は従来と完全同一**、`case_pane` は無改造、
+    **非同期化はしない** (= 軸A「作業量を減らす」。軸B「メインスレッドから外す」非同期化
+    は実機で残った場合のみ)。
+  - broken symlink は `de.stat()` が OSError → 呼び出し側でスキップ (旧挙動踏襲)。
+    symlink(→dir)/.lnk は左ボタン列に出さず root_files (事件ショートカット扱い、ADR-16)。
+- **理由 (軸A を先に・軸B は保険)**: 非同期化 (軸B) は「固まらないが速くならない」上に
+  選択追従・読込中エッジ・スレッド境界・引き継ぎコストのデメリットを伴う。scandir 化
+  (軸A) は**走査自体を速く**し、core 内完結・出力同一・テスト維持で**実質デメリット無し**。
+  まず軸Aで原因を小さくし、実機で残った重いフォルダだけ軸B (差分更新/部分非同期) を
+  足す段構えが最小リスク、とユーザー合意 (2026-06-01 の設計討議)。
+- **テスト**: `tests/test_folder_scanner.py` 10 件新規 (これまで folder_scanner はテスト
+  未整備だった。symlink / .lnk / broken-link / 並び順 / Alt 割当 / 件数バッジ)。全 122 件中
+  Win venv は symlink 2 件 skip で 120 passed/2 skipped、Linux python3 では 10/10 緑。
+- **残作業 (Phase 2②)**: ①で実機の重いフォルダがまだ固まる場合のみ。①で全走査が安く
+  なれば操作後 refresh の毎回全走査 (= ground truth) の単純さを保てる。残るなら
+  (a) 操作後 refresh の差分更新 (走査ゼロ化、delta 計算の正しさ + 二重管理が新リスク)、
+  (b) コールド初回の部分非同期 (preview と同じ seq-guard、境界はデータ取得のみに限定)。
+  ユーザー観測「いつも固まるフォルダは決まっている」→ 全体非同期でなく重いフォルダだけ
+  別処理に寄せる。
 
 ---
 
