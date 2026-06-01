@@ -10,13 +10,14 @@
   - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化
   - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O がメインスレッドをブロック** (詳細 §15 ADR-29/ADR-30)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
   - **Phase 2① の知見 (ADR-30)**: Phase 1 で消えなかったのは、固まるのが「選択→プレビュー」(I/O 無し) ではなく **一覧の構築 = 事件フォルダ走査** だったため。`Path.iterdir()` + 個別 `stat/is_dir/is_symlink` で 1 事件あたり数千回の metadata 呼び出しが X: を直列ブロックしていた (「stat 単発は速いが stat の山は遅い」)。`os.scandir` 化で列挙数回に削減 (出力は完全同一・非同期化なし = 軸A「作業量を減らす」)
+  - **同セッションで「文字の描画モード切替 (ガタガタ/中間/なめらか)」を追加** (commit `f5cbbe2`、フリーズとは独立): モニタ解像度の好みで手動切替 (1080p のドット感 vs 4K の滑らかさ)。**表示メニュー**から選択、**同フォント・同サイズのまま `QFont.StyleStrategy` だけ 3 段階**、kfile.db 永続、起動時復元、**既定はガタガタ=レトロ維持**。詳細 §15 ADR-31
   - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
   - **本機 = Win 機**。CLAUDE.md / 旧記述の「本機 = Linux」は実態とズレ (2026-05-29 ユーザー確認、開発も配布確認もこの Win 機で実施)
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
-- UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)
+- UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **122 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py`)。Win venv は symlink 2 件 skip で **120 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
+- テスト: **128 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py`)。Win venv は symlink 2 件 skip で **126 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
 
 ---
 
@@ -1568,6 +1569,38 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   (b) コールド初回の部分非同期 (preview と同じ seq-guard、境界はデータ取得のみに限定)。
   ユーザー観測「いつも固まるフォルダは決まっている」→ 全体非同期でなく重いフォルダだけ
   別処理に寄せる。
+
+---
+
+### ADR-31: 文字描画モードを 3 段階 (ガタガタ/中間/なめらか) 手動切替にする (2026-06-01)
+- **経緯**: ユーザーから「解像度の違うモニタで見え方の好みを手動で切り替えたい」要望。
+  1080p ではビットマップのドット感 (ガタガタ) が似合うが、4K の OS スケーリング
+  (200% 等) では同じガタガタでも 1080p@100% とは見え方が違い、滑らかな方が好ましい。
+  サイズが小さい・滲むといった「問題」ではなく **純粋に見た目の好み**の話。
+- **前提**: アプリは MS Gothic 12pt の埋め込みビットマップ (`PreferBitmap | NoAntialias`)
+  を全 widget に強制 (ADR-17)。ビットマップフォントは解像度に追従して滑らかに拡縮
+  できない構造的副作用がある。フォント適用は全箇所が `_font_strategy.apply_bitmap_
+  font_strategy` を通る (MainWindow + 全ダイアログ + tooltip)。
+- **決定**: **同じフォント・同じ pt のまま `QFont.StyleStrategy` だけを 3 段階で切替**。
+  サイズ/行高/レイアウトは一切変えない (前に検討した「文字サイズ変更」は密度レイアウト
+  が 12pt 前提で連動改修が要りコスト大だったため、見た目だけのこの方式を採用)。
+  - ガタガタ = `PreferBitmap | NoAntialias` (既定。レトロのドット感)
+  - 中間   = `PreferOutline | NoAntialias` (アウトライン字形だが AA 無し)
+  - なめらか = `PreferOutline | PreferAntialias` (アウトライン + AA)
+  - **表示メニュー →「文字の描画」** に排他 3 択 (`QActionGroup`)。選択で全 top-level
+    widget + tooltip に即時再適用 (`reapply_font_render_mode`、再起動不要)。kfile.db
+    `font_render_mode` に永続、起動時 `MainWindow._apply_saved_font_mode` で復元 (db
+    初期化直後に global を set → 以降の widget 構築 + main.py の最終 apply に反映)。
+- **理由 / 方針**: **既定はガタガタ (レトロ路線は無傷)**、中間/なめらかは自分のハード
+  都合の opt-in なので CLAUDE.md「レトロ UI を曲げない」に抵触しない。フリーズ修正
+  とは独立 (別ファイル・別経路)。
+- **テスト**: `tests/test_font_strategy.py` 6 件 (3 モードが別戦略 / 各フラグ / set-get
+  往復 / 不正値フォールバック)。GUI 適用はヘッドレス smoke で確認 (切替・永続・復元・
+  不正値)。全 126 passed / 2 skipped。
+- **未確定 (実機で要調整の可能性)**: 「中間/なめらか」の実際の見え方は MS Gothic の
+  字形依存。実機の 1080p/4K で目視し、「中間がガタガタと差がない」「なめらかが滲み
+  すぎ」等あれば `_STRATEGIES` のフラグ (`PreferOutline`/`ForceOutline`/`PreferAntialias`
+  /`PreferQuality` 等) を差し替えて微調整する。`_font_strategy._STRATEGIES` の 1 箇所のみ。
 
 ---
 
