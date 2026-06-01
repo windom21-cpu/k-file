@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -38,6 +38,13 @@ from src.ui.function_keys_bar import FunctionKeysBar
 from src.ui.history_view import HistoryDialog
 from src.ui.inbox_pane import InboxPane
 from src.ui.open_case_dialog import OpenCaseDialog
+from src.ui._font_strategy import (
+    FONT_MODE_BITMAP,
+    FONT_MODE_LABELS,
+    FONT_MODE_MENU_ITEMS,
+    reapply_font_render_mode,
+    set_font_render_mode,
+)
 from src.ui.preview_pane import PreviewPane
 from src.ui.rename_dialog import RenameDialog
 from src.ui.settings_dialog import (
@@ -107,6 +114,10 @@ class MainWindow(QMainWindow):
         self.splitter.setHandleWidth(0)
         self.splitter.setChildrenCollapsible(False)
         self.db = KFileDB()
+        # 文字描画モード (ガタガタ/中間/なめらか) を db から復元 (以降の widget
+        # 構築 = case_pane/command_strip 等の apply に反映される)。menu は _build_menus
+        # で構築済なので、ここでチェック状態も合わせられる。
+        self._apply_saved_font_mode()
         # 設定から Inbox 監視先を復元 (未設定なら InboxPane の dev 既定が使われる)
         configured_sources = load_inbox_sources(self.db)
         self.inbox_pane = InboxPane(self.db, sources=configured_sources)
@@ -344,6 +355,25 @@ class MainWindow(QMainWindow):
             lambda on: self.inbox_pane.set_show_ignored(on)
         )
         m_view.addAction(act_show_ignored)
+
+        # 文字の描画モード (モニタ解像度の好みで手動切替: ガタガタ/中間/なめらか)。
+        # 1080p はビットマップのドット感、4K スケーリングでは滑らかが好まれるため、
+        # 同じフォント・同じサイズのまま StyleStrategy だけ切替える (サイズ/レイアウト
+        # は不変)。実際の切替は _on_font_mode_changed、起動時復元は _apply_saved_font_mode。
+        m_view.addSeparator()
+        m_font = m_view.addMenu("文字の描画(&F)")
+        self._font_mode_group = QActionGroup(self)
+        self._font_mode_group.setExclusive(True)
+        self._font_mode_actions: dict[str, QAction] = {}
+        for mode, label in FONT_MODE_MENU_ITEMS:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            self._font_mode_group.addAction(act)
+            # triggered はユーザー操作時のみ (programmatic setChecked では飛ばない)
+            act.triggered.connect(lambda _checked, m=mode: self._on_font_mode_changed(m))
+            m_font.addAction(act)
+            self._font_mode_actions[mode] = act
+        self._font_mode_actions[FONT_MODE_BITMAP].setChecked(True)  # 既定 (db で上書き)
         # F2 は M3 で「選択中ファイルをリネーム」に充てる予定 (Windows 標準)
 
         # ツールメニュー: 設定 (Inbox 監視パス・ksystemz.db パス等) の入口。
@@ -357,6 +387,32 @@ class MainWindow(QMainWindow):
         act_about = QAction("K-FILE について(&A)", self)
         act_about.triggered.connect(self._on_about)
         m_help.addAction(act_about)
+
+    def _apply_saved_font_mode(self) -> None:
+        """kfile.db に保存された文字描画モードを復元し、global + メニューに反映。
+
+        db 初期化直後 (以降の widget 構築前) に呼ぶ。実際の widget への最終適用は
+        main.py の `apply_bitmap_font_strategy(window)` が全 tree に対して行う。
+        """
+        mode = self.db.get_setting("font_render_mode", FONT_MODE_BITMAP) or FONT_MODE_BITMAP
+        if mode not in self._font_mode_actions:
+            mode = FONT_MODE_BITMAP
+        set_font_render_mode(mode)
+        # programmatic な setChecked は triggered を発火しない (再帰しない)
+        self._font_mode_actions[mode].setChecked(True)
+
+    def _on_font_mode_changed(self, mode: str) -> None:
+        """「表示 → 文字の描画」でモードを選んだ時: 永続化 + 全 widget へ即時再適用。"""
+        # メニュークリック時は Qt が自動チェック済だが、プログラム的呼び出しでも
+        # メニュー表示を同期させるため明示。setChecked は triggered を再発火しない。
+        act = self._font_mode_actions.get(mode)
+        if act is not None:
+            act.setChecked(True)
+        self.db.set_setting("font_render_mode", mode)
+        set_font_render_mode(mode)
+        reapply_font_render_mode()   # 開いている全 top-level widget + tooltip に再付与
+        label = FONT_MODE_LABELS.get(mode, mode)
+        self.statusBar().showMessage(f"文字の描画: {label}", 2000)
 
     def _on_strip_subfolder(self, view_id: int) -> None:
         """中央ストリップの数字ボタン: 選択中 → 投入、未選択 → 閲覧のみ。"""

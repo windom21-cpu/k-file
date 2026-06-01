@@ -17,12 +17,12 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QToolTip
 
 from src.infra.kfile_db import app_data_dir
 from src.ipc import IpcServer, try_send_to_primary
-from src.ui._font_strategy import apply_bitmap_font_strategy
+from src.ui._font_strategy import apply_bitmap_font_strategy, tooltip_font
 from src.ui.main_window import MainWindow
 
 
@@ -97,14 +97,6 @@ def main() -> int:
     app.setApplicationVersion(VERSION)
     app.setStyle("Windows")  # Fusion / windowsvista を避けて Win95 寄りに固定
     app.setStyleSheet(_load_stylesheet())
-    # ツールチップは top-level の別 widget で `*` 継承外。同じ MS Gothic
-    # ビットマップ戦略で揃える (色/枠は QSS の QToolTip ルールで設定)。
-    tooltip_font = QFont("MS Gothic", 12)
-    tooltip_font.setStyleStrategy(
-        QFont.StyleStrategy.PreferBitmap
-        | QFont.StyleStrategy.NoAntialias
-    )
-    QToolTip.setFont(tooltip_font)
     app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
     initial_paths = parse_initial_paths(sys.argv)
@@ -117,7 +109,10 @@ def main() -> int:
 
     window = MainWindow(initial_paths=initial_paths)
     window.show()
+    # MainWindow が kfile.db から文字描画モード (ガタガタ/中間/なめらか) を復元済。
+    # 全 widget tree へ最終適用し、ツールチップも同モードに揃える。
     apply_bitmap_font_strategy(window)
+    QToolTip.setFont(tooltip_font())
 
     # primary 側として LocalServer を立ち上げ、後発プロセスからのパス送信を待つ
     def _open_paths_from_ipc(paths: list[Path]) -> None:
