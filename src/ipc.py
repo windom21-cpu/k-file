@@ -21,13 +21,30 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 # 接続名 (バージョン suffix 付き — プロトコル変更時に旧 server と隔離)
 SINGLE_INSTANCE_KEY = "k-file-instance-v1"
 
 # 1 パスは改行区切り、UTF-8。EOF (相手 close) で終了。
+
+# secondary が送信後に disconnect しないまま放置/crash した場合の保険タイムアウト。
+_RECV_FALLBACK_MS = 1000
+
+
+def _parse_paths(text: str) -> list[Path]:
+    """改行区切りテキストをパス列に変換する (空行はスキップ、不正は捨てる)。"""
+    paths: list[Path] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            paths.append(Path(line))
+        except (TypeError, ValueError):
+            continue
+    return paths
 
 
 def try_send_to_primary(paths: list[Path], timeout_ms: int = 500) -> bool:
@@ -82,27 +99,39 @@ class IpcServer(QObject):
         QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
 
     def _on_new_connection(self) -> None:
-        """secondary が接続してきた: バイト列を読み取り → on_paths。"""
+        """secondary が接続してきた: メインスレッドをブロックせず非同期に受信する。
+
+        旧実装は waitForReadyRead(500) + waitForDisconnected(200) でメイン
+        スレッドを最大 0.7 秒/接続ブロックしていた。K-SystemZ から「フォルダを
+        開く」を連打されると累積し、UI が固まりかける一因になりうる。readyRead /
+        disconnected シグナルで受け取ってブロックを排除し、相手が切断しないまま
+        放置/crash した場合だけ _RECV_FALLBACK_MS のタイマーで打ち切る。
+        """
         sock = self._server.nextPendingConnection()
         if sock is None:
             return
-        # 同期で短時間だけ読み取り (大きなデータは想定外 — 数 KB のパスのみ)
-        if not sock.waitForReadyRead(500):
+        buf = bytearray()
+        state = {"done": False}
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+
+        def finish() -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            timer.stop()
+            buf.extend(bytes(sock.readAll()))  # 未通知の残バイトを回収
             sock.close()
-            self._on_paths([])  # 空送信でも raise だけは行う
-            return
-        data = bytes(sock.readAll())
-        # 相手が disconnect するまで少し待つ (取りこぼし防止)
-        sock.waitForDisconnected(200)
-        sock.close()
-        text = data.decode("utf-8", errors="replace")
-        paths: list[Path] = []
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                paths.append(Path(line))
-            except (TypeError, ValueError):
-                continue
-        self._on_paths(paths)
+            sock.deleteLater()
+            text = bytes(buf).decode("utf-8", errors="replace")
+            # paths が空でも raise だけは行う (旧挙動踏襲)
+            self._on_paths(_parse_paths(text))
+
+        timer.timeout.connect(finish)
+        sock.readyRead.connect(lambda: buf.extend(bytes(sock.readAll())))
+        sock.disconnected.connect(finish)
+        timer.start(_RECV_FALLBACK_MS)
+        # newConnection を処理する頃には secondary が既に送信 + 切断済みのことが
+        # ある。その場合 disconnected シグナルは届かないので明示的に回収する。
+        if sock.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+            finish()

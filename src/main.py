@@ -139,9 +139,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # sys.exit は try の外に置く。try 内に置くと正常終了 (SystemExit:0) まで
+    # except BaseException が拾い、毎回 error.log に SystemExit のトレースを
+    # 書いてしまう (secondary→primary 転送の return 0 でも毎回記録され、
+    # error.log が「正常なのにエラーだらけ」に見えるノイズになる)。ここでは
+    # main() の実行中に実際に送出された致命例外だけを記録して再送出する。
     try:
-        sys.exit(main())
+        exit_code = main()
     except BaseException as e:
-        # 起動経路 (main() 内 / Qt import 等) で発生した致命例外を error.log へ
         _log_startup_error(e)
         raise
+    sys.exit(exit_code)
