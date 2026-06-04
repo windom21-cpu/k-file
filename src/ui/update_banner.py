@@ -61,9 +61,12 @@ class UpdateBanner(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("updateBanner")
+        # ステータスバー (QSS で 16px 固定) に収める。これをしないと内部の
+        # QPushButton (汎用 QSS で 22px) で縦に見切れる。
+        self.setFixedHeight(16)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
         self._label = QLabel("")
         self._label.setObjectName("updateBannerLabel")
         layout.addWidget(self._label)

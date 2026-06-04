@@ -190,6 +190,20 @@ QStatusBar::item {
     border: none;
 }
 
+/* 自動アップデート通知バナー: 16px のステータスバーに収める。汎用 QPushButton の
+   22px 固定だと縦に見切れるので、バナー内ボタンだけ低背・薄パディングに上書き。 */
+#updateBannerLabel {
+    font-size: 9pt;
+    padding: 0;
+}
+#updateBannerBtn {
+    min-height: 14px;
+    max-height: 14px;
+    min-width: 0;
+    padding: 0 6px;
+    font-size: 9pt;
+}
+
 /* ─── 自作タイトルバー (14px) ──────────────────────────────── */
 #titleBar {
     background-color: #000080;

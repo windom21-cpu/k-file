@@ -6,8 +6,8 @@
 ---
 
 ## 現状サマリ
-- 現在地: **2026-06-04 セッションで ①外枠を Win95/98 風の 2 段 4 色 raised ベベルに作り直し (commit `00f159a`、ADR-33 更新) ②`v0.1.0-beta.2` タグ切り (commit `62c09c1`、M5f 根治 + M5g + 外枠を 1 本に束ねた prerelease、CI 成功で `k-file-windows.zip` upload 済) ③M5f Phase 3 掃除 = 正常終了の error.log 誤記録停止 + IPC 受信のメインスレッド非ブロック化 (commit `6d5feb1`、ADR-35) を実施。直前に M5f Phase 2① (scandir 化) の実機効果測定が完了 = Win 実機でフリーズ再現なし・根治見込み (2026-06-04 ユーザー報告)。次の能動アクションは Win 機で β.2 への自動アップデート初発火確認 + 業務並走 (外枠/リサイズ/F4/Inbox 順も同時に目視)。⚠ Phase 3 (③) は β.2 タグより後の commit なので β.2 には未同梱 = IPC/error.log の実機確認は β.3 を切ってから**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化 → 2026-06-04 実機でフリーズ再現なし確認 + UI 操作性改善 (リサイズ/外枠/F4/Inbox ソート) → 2026-06-04 外枠を 2 段 4 色 raised に polish + `v0.1.0-beta.2` タグ切り + M5f Phase 3 掃除 (error.log 誤記録 / IPC 非同期化)
+- 現在地: **2026-06-05 セッションで 🎉「自動アップデート機構 (案②) が実機で全工程動作」を初めて確認 (β.5→β.6)。経緯: β.1/β.2 同梱の updater (再起動後「無反応」) を調べると updater バッチに 3 欠陥 → 直したが β.3/β.4 は今度は「再起動後ハング」(cmd を DETACHED=コンソールなしで起動すると `tasklist | findstr` パイプがデッドロック)。実機で対照実験し、updater を `cmd バッチ` → `PowerShell + CREATE_NO_WINDOW` に全面作り直し (commit `aa732dc`、ADR-36) → β.5 で実機エンドツーエンド成功 (フォルダ入替→展開→旧版掃除→再起動)。ADR-35 (正常終了の error.log 誤記録停止 + IPC 非同期化) も β.5 で実機反映 = error.log の SystemExit:0 ノイズ停止を確認。あわせて about ダイアログの version ハードコード "M5" を実 VERSION 表示に修正 (commit `231c1c2`)、更新通知バナーがステータスバー (16px) で見切れる UI を低背 QSS で修正 (β.7)。次の能動アクションは β.7 への自動更新 (= バナー修正の反映 + 更新機構の再確認) + 業務並走**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化 → 2026-06-04 実機でフリーズ再現なし確認 + UI 操作性改善 (リサイズ/外枠/F4/Inbox ソート) → 2026-06-04 外枠を 2 段 4 色 raised に polish + `v0.1.0-beta.2` タグ切り + M5f Phase 3 掃除 (error.log 誤記録 / IPC 非同期化) → 2026-06-05 自動アップデート実機検証で updater のハング根治 (cmd→PowerShell 化、ADR-36) → β.3〜β.6 を順次切り、β.5→β.6 で**案②が実機で全工程動作することを初確認** → バナー見切れ修正で β.7
   - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O がメインスレッドをブロック** (詳細 §15 ADR-29/ADR-30)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
   - **Phase 2① の知見 (ADR-30)**: Phase 1 で消えなかったのは、固まるのが「選択→プレビュー」(I/O 無し) ではなく **一覧の構築 = 事件フォルダ走査** だったため。`Path.iterdir()` + 個別 `stat/is_dir/is_symlink` で 1 事件あたり数千回の metadata 呼び出しが X: を直列ブロックしていた (「stat 単発は速いが stat の山は遅い」)。`os.scandir` 化で列挙数回に削減 (出力は完全同一・非同期化なし = 軸A「作業量を減らす」)
   - **同セッションで「文字の描画モード切替 (ガタガタ/中間/なめらか)」を追加** (commit `f5cbbe2`、フリーズとは独立): モニタ解像度の好みで手動切替 (1080p のドット感 vs 4K の滑らかさ)。**表示メニュー**から選択、**同フォント・同サイズのまま `QFont.StyleStrategy` だけ 3 段階**、kfile.db 永続、起動時復元、**既定はガタガタ=レトロ維持**。詳細 §15 ADR-31
@@ -17,7 +17,7 @@
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)。ウインドウは frameless だが Win95/98 風 **2 段 4 色 raised 外枠** (外側 #DFDFDF/#000000 + 内側 #FFFFFF/#808080) + 全辺/全角リサイズを自前実装 (ADR-32/33)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **138 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py`)。Win venv は symlink 2 件 skip で **136 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
+- テスト: **139 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py`)。Win venv は symlink 2 件 skip で **137 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ。⚠ `test_ipc.py` は本番と同じ単一インスタンスキー (`k-file-instance-v1`) を使うため、**k-file 実機が起動中だと衝突して落ちる** (テスト分離の TODO)。roundtrip は本番同様の別プロセス送信 (subprocess) で検証
 
 ---
 
@@ -1749,6 +1749,48 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   プロセス間でも secondary exit 0 + error.log の SystemExit 不増を確認。
 - **β.2 との関係**: 本 ADR の修正は `v0.1.0-beta.2` (commit `62c09c1`) **より後**の commit
   `6d5feb1` = β.2 には未同梱。Win での効果確認は β.3 を切ってから。
+- **後日談 (2026-06-05)**: ADR-36 の updater 作り直しで β.5 を切った際に実機反映され、
+  error.log の `SystemExit:0` ノイズが止まったことを確認。IPC 非同期受信も β.5→β.6 の
+  自動更新 (= 別プロセスからのパス送信) が成功した = 実プロセス間で正常動作と確認。
+
+### ADR-36: 自動アップデートの適用は cmd バッチでなく PowerShell + CREATE_NO_WINDOW で行う (2026-06-05)
+- **経緯**: 案② (M5e/M6c) の「DL → 再起動 → 旧フォルダ退避 + 新版展開 + 再起動」適用部が
+  実機で 2 段階に壊れていた。β.5→β.6 の実機更新成功で根治を確認するまでの記録。
+- **第1段 (β.1/β.2 同梱バッチの「無反応」)**: `write_updater_batch` が生成する cmd バッチに
+  3 欠陥 — ① cmd の CWD が install_dir のままで install_dir 自身を `ren` できず失敗 (Explorer/
+  K-SystemZ 起動の k-file.exe の CWD が install_dir)、② `timeout` がコンソールなしで無効、
+  ③ 失敗を `>nul`/`exit /b 0` で握り潰し「無反応」に見える。実機調査: install 無傷・`.old` 無し・
+  error.log は SystemExit:0 (= 旧 β.1) のみ。
+- **第2段 (β.3/β.4 "修正版" バッチの「ハング」)**: 第1段を `cd /d %TEMP%` + `ping` 待機 +
+  ログ + ロールバックで直したが、今度は**再起動後にハング**。原因は **`DETACHED_PROCESS`
+  (コンソールなし) で起動した cmd の `tasklist | findstr` パイプがデッドロック** (子プロセスが
+  入れ子で残って親をブロック)。`ping`/`timeout` 等コンソール依存コマンドも console=False の
+  windowed exe からは不安定。
+- **実機対照実験で確定**: ① cmd + DETACHED = `tasklist|findstr` でハング、② PowerShell +
+  DETACHED = 起動すらしない (ログ無し)、③ **PowerShell + `CREATE_NO_WINDOW` (隠しコンソール)
+  = 完走** (`Get-Process`/`Expand-Archive`/`Start-Process` がコンソール非依存で動く)。
+- **決定**: `write_updater_batch` → **`write_updater_script` (PowerShell)** に作り直す。
+  `Get-Process` で k-file 終了を最大 30 秒ポーリング → `Rename-Item` で install_dir を `.old` に
+  退避 → `Expand-Archive` で zip 展開 → `Start-Process` で新版起動 → `.old` 削除。**rename 失敗
+  時は旧版を起動し直し、展開失敗時は `.old` を元名に戻すロールバック**、各ステップを
+  `updater.log` に記録、は踏襲。`tasklist`/`findstr`/`ping`/`timeout`/パイプは一切使わない。
+  PS パスは単一引用符 (`''` エスケープ)・UTF-8 BOM 付きで書き出し (PS 5.1 が非 ASCII を読む)。
+  `update_banner` は `powershell.exe -File` + `CREATE_NO_WINDOW` で起動 (窓を出さず確実に動く)。
+- **検証**: 本機 (Win) でダミー install + zip を使った実プロセス エンドツーエンド検証 →
+  `updater start → wait done → update applied OK → updater end` で約 1 秒完走、フォルダ完全入替を
+  確認。その後 **β.5 を手動インストール → β.6 を公開 → β.5 起動 → 通知 → 更新 → 再起動 →
+  「K-FILE について」が `0.1.0-beta.6` 表示** = 案②が初めて実機で全工程成功 (commit `aa732dc`)。
+- **重要な含意**: updater は**動いている版**が生成するので、壊れた β.1〜β.4 は自己修復不可。
+  fix 入りビルド (β.5) を一度だけ手動で入れる必要があった。以降の自動更新は正常。
+
+### ADR-37: 更新通知バナーをステータスバー (16px) に収める (2026-06-05)
+- **経緯**: 自動アップデート通知バナー (`UpdateBanner`、status bar に `addPermanentWidget`) が
+  「インフォメーションバーから見切れている」とユーザー報告。原因は QSS で `QStatusBar` が
+  `min/max-height: 16px` 固定なのに、バナー内の汎用 `QPushButton` が `min/max-height: 22px` で、
+  16px のバーに入りきらず縦に見切れていた (更新ボタンは押せたが上下が切れて見えた)。
+- **決定**: `#updateBannerBtn` / `#updateBannerLabel` を低背・薄パディング (ボタン 14px 高・
+  `min-width:0`・`padding:0 6px`・9pt) に QSS で上書きし、`UpdateBanner` 自体を `setFixedHeight(16)`。
+  オフスクリーン pixmap grab で 16px バー内にボタン・文字が収まることを目視検証。β.7 で反映。
 
 ---
 
