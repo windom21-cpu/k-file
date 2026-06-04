@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.__version__ import VERSION
 from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
@@ -73,7 +74,8 @@ class AboutDialog(QDialog):
         app_name = QLabel("K-FILE — 案件ドキュメント作業台")
         app_name.setObjectName("aboutAppName")
         text_col.addWidget(app_name)
-        text_col.addWidget(QLabel("バージョン M5 (K-SystemZ 連携 + 設定 + 復元)"))
+        # 実際の VERSION を表示 (旧来ここは "M5" ハードコードで実版とズレていた)。
+        text_col.addWidget(QLabel(f"バージョン {VERSION}"))
         text_col.addWidget(QLabel("法律実務向け 2/3 ペイン型ファイラー"))
         text_col.addStretch(1)
         top.addLayout(text_col, stretch=1)
