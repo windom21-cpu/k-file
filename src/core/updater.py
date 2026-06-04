@@ -169,24 +169,41 @@ def write_updater_batch(
     batch_path:  書き出し先。未指定なら zip 隣りに `apply_update.bat`
 
     バッチの動作:
+      0. 作業フォルダを %TEMP% に移す (install_dir を CWD にしたままだと
+         install_dir 自身を ren できないため。Explorer/K-SystemZ から起動された
+         k-file.exe の CWD は install_dir のことが多い)
       1. k-file.exe プロセス消滅まで wait (タスクリスト確認、最大 30 秒)
+         待機は `ping` で行う。`timeout` は console=False の windowed app から
+         DETACHED で起動したバッチでは「コンソールなし」で即エラーになり待てない
       2. install_dir を install_dir + ".old" にリネーム (バックアップ)
+         失敗 = フォルダがまだ使用中 → 旧版を起動し直してユーザーを取り残さない
       3. PowerShell Expand-Archive で zip を install_dir に展開
+         新 exe が出てこなければロールバック (.old を元名に戻す)
       4. 新 install_dir/k-file.exe を起動
       5. .old フォルダ削除 (失敗しても黙る、AV スキャン中など)
+
+    各ステップは `%~dp0updater.log` に追記する (失敗が「無反応」に見えないように。
+    error.log と同じ "困ったらログを見る" 運用)。
     """
     if batch_path is None:
         batch_path = zip_path.with_name("apply_update.bat")
     install_dir = install_dir.resolve()
     zip_path = zip_path.resolve()
     old_dir = install_dir.with_name(install_dir.name + ".old")
+    new_exe = install_dir / new_exe_name
 
     # cmd.exe バッチは ANSI / SJIS で UTF-8 BOM 無しが安全。エスケープは
     # 二重引用符でくくり、変数展開は `%~dp0` 等を活用。
+    # 分岐は () ブロックを避け goto ラベルで書く (パス中の特殊文字で壊れにくい)。
     lines = [
         "@echo off",
-        "setlocal",
-        # k-file.exe が落ちるまで wait (最大 30 秒、1 秒間隔)
+        "setlocal enableextensions",
+        'set "LOG=%~dp0updater.log"',
+        'echo [%date% %time%] updater start >> "%LOG%"',
+        # install_dir を CWD にしたままだと ren できないので外へ退避
+        'cd /d "%TEMP%" 2>nul',
+        # k-file.exe が落ちるまで wait (最大 30 秒、約 1 秒間隔)。
+        # timeout はコンソールなしで効かないので ping で待つ。
         "set /a TRIES=30",
         ":wait_loop",
         f'tasklist /FI "IMAGENAME eq {new_exe_name}" '
@@ -194,22 +211,42 @@ def write_updater_batch(
         "if errorlevel 1 goto proceed",
         "set /a TRIES=TRIES-1",
         "if %TRIES% LEQ 0 goto proceed",
-        "timeout /t 1 /nobreak >nul",
+        "ping -n 2 127.0.0.1 >nul",
         "goto wait_loop",
         ":proceed",
+        'echo [%date% %time%] wait done TRIES=%TRIES% >> "%LOG%"',
         # 旧 .old が残っていれば先に削除 (前回失敗の痕跡)
-        f'if exist "{old_dir}" rmdir /S /Q "{old_dir}" 2>nul',
-        # 現フォルダを .old にリネーム
+        f'if exist "{old_dir}" rmdir /S /Q "{old_dir}" >> "%LOG%" 2>&1',
+        # 現フォルダを .old にリネーム (バックアップ)
         f'ren "{install_dir}" "{install_dir.name}.old"',
-        # zip を install_dir の親に展開 (install_dir 名で出てくる前提)
-        # PowerShell Expand-Archive は zip 内に k-file/ がなくても展開先を指定可能
+        "if errorlevel 1 goto ren_failed",
+        # zip を install_dir に展開 (CI は dist/k-file/* を直に zip 化 = 中身が
+        # install_dir 直下に出る)
         f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
         f'"Expand-Archive -LiteralPath \'{zip_path}\' '
-        f'-DestinationPath \'{install_dir}\' -Force"',
-        # 新版起動 (start /b で detach、待たない)
-        f'start "" "{install_dir / new_exe_name}"',
+        f'-DestinationPath \'{install_dir}\' -Force" >> "%LOG%" 2>&1',
+        # 展開後に新 exe が無ければ展開失敗 → ロールバック
+        f'if not exist "{new_exe}" goto expand_failed',
+        'echo [%date% %time%] update applied OK >> "%LOG%"',
+        # 新版起動 (待たない)
+        f'start "" "{new_exe}"',
         # 旧フォルダクリーンアップ (失敗しても OK)
-        f'rmdir /S /Q "{old_dir}" 2>nul',
+        f'rmdir /S /Q "{old_dir}" >> "%LOG%" 2>&1',
+        "goto end",
+        # ── ren に失敗 = フォルダがまだ使用中。無傷なので旧版を起動し直す ──
+        ":ren_failed",
+        'echo [%date% %time%] ERROR ren failed (folder in use) >> "%LOG%"',
+        f'start "" "{new_exe}"',
+        "goto end",
+        # ── 展開に失敗 = 新 exe が無い。.old を元名に戻して旧版を起動 ──
+        ":expand_failed",
+        'echo [%date% %time%] ERROR expand failed, rolling back >> "%LOG%"',
+        f'if exist "{install_dir}" rmdir /S /Q "{install_dir}" >> "%LOG%" 2>&1',
+        f'ren "{old_dir}" "{install_dir.name}"',
+        f'start "" "{new_exe}"',
+        "goto end",
+        ":end",
+        'echo [%date% %time%] updater end >> "%LOG%"',
         "endlocal",
         "exit /b 0",
     ]

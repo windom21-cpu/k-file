@@ -173,6 +173,18 @@ def test_write_updater_batch_creates_file(tmp_path: Path):
     # CRLF 改行 (Windows バッチ用)
     assert "\r\n" in batch.read_bytes().decode("cp932")
 
+    # ── フリーズ/無反応バグ修正の回帰ガード ──
+    # CWD を install_dir 外へ退避していること (install_dir 自己ロック対策)
+    assert "cd /d" in content
+    # 待機は console 非依存の ping。timeout は console=False の DETACHED
+    # バッチで効かないので使わない
+    assert "ping -n" in content
+    assert "timeout" not in content
+    # 失敗時の分岐 (ren 失敗 / 展開失敗ロールバック) と診断ログがあること
+    assert ":ren_failed" in content
+    assert ":expand_failed" in content
+    assert "updater.log" in content
+
 
 def test_write_updater_batch_custom_path(tmp_path: Path):
     install_dir = tmp_path / "k-file"

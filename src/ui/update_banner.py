@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QUrl, Qt, Signal
@@ -314,9 +315,13 @@ class UpdateManager(QObject):
         # updater バッチを書き出して launch detached → k-file 終了
         batch_path = write_updater_batch(install_dir, zip_path)
         try:
-            # detached 起動 (k-file が終わっても batch は走り続ける)
+            # detached 起動 (k-file が終わっても batch は走り続ける)。
+            # cwd は install_dir の外 (= %TEMP%) に固定する。cmd.exe の CWD が
+            # install_dir 内だと install_dir 自身を ren できず更新が失敗するため
+            # (batch 側でも cd /d %TEMP% するが二重防御)。
             subprocess.Popen(
                 ["cmd.exe", "/c", str(batch_path)],
+                cwd=tempfile.gettempdir(),
                 creationflags=(
                     subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
                     if sys.platform == "win32"
