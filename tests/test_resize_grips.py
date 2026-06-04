@@ -88,8 +88,10 @@ def test_window_frame_created_and_mouse_transparent():
 
 
 def test_window_frame_paints_bevel_border():
-    """外枠が「上/左=明, 右/下=暗」の 2px raised bevel を端まで塗ること。
+    """外枠が本物の Win95 窓枠と同じ「2 段 4 色」の raised bevel を端まで塗ること。
 
+    上/左 = 外側 3DLIGHT(#DFDFDF) → 内側 白(#FFFFFF)、
+    下/右 = 外側 黒(#000000) → 内側 影灰(#808080)。
     High-DPI (DPR=2) でも端の device pixel が欠けないことを確認する
     (drawLine ではなく fillRect で塗る根拠)。
     """
@@ -109,10 +111,16 @@ def test_window_frame_paints_bevel_border():
         c = img.pixelColor(int(lx * dpr), int(ly * dpr))
         return (c.red(), c.green(), c.blue())
 
-    assert lpx(0, 45) == (255, 255, 255)    # 左辺 = 明
-    assert lpx(60, 0) == (255, 255, 255)    # 上辺 = 明
-    assert lpx(119, 45) == (64, 64, 64)     # 右辺 最端 = 暗 (端まで塗れている)
-    assert lpx(60, 89) == (64, 64, 64)      # 下辺 最端 = 暗
+    # 上/左 = 明 (外側 3DLIGHT → 内側 白) の 2 段。
+    assert lpx(0, 45) == (223, 223, 223)    # 左辺 外側 = 3DLIGHT
+    assert lpx(1, 45) == (255, 255, 255)    # 左辺 内側 = 白
+    assert lpx(60, 0) == (223, 223, 223)    # 上辺 外側 = 3DLIGHT
+    assert lpx(60, 1) == (255, 255, 255)    # 上辺 内側 = 白
+    # 下/右 = 暗 (外側 黒 → 内側 影灰) の 2 段。端まで塗れている。
+    assert lpx(119, 45) == (0, 0, 0)        # 右辺 最端 = 黒
+    assert lpx(118, 45) == (128, 128, 128)  # 右辺 内側 = 影灰
+    assert lpx(60, 89) == (0, 0, 0)         # 下辺 最端 = 黒
+    assert lpx(60, 88) == (128, 128, 128)   # 下辺 内側 = 影灰
     assert lpx(60, 45) == (192, 192, 192)   # 中央 = 枠なし (背景がそのまま)
 
 

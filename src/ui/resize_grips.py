@@ -24,10 +24,16 @@ from PySide6.QtWidgets import QWidget
 _MARGIN = 6
 _CORNER = 16
 
-# Win95 風 raised 外枠の色 (上/左 = 明、下/右 = 暗) と太さ。
-_FRAME_LIGHT = QColor("#FFFFFF")
-_FRAME_DARK = QColor("#404040")
-_FRAME_WIDTH = 2
+# Win95/98 風 raised ウインドウ外枠の色 (古典 3D システムカラー)。
+# 本物の窓枠は「外側 1px + 内側 1px」の 2 段ベベルで、片側 1 色のベタ塗りでは
+# なく 4 色で構成される。これが「ボタン」ではなく「窓」に見える肝。
+#   上/左 = 明: 外側 3DLIGHT (#DFDFDF) → 内側 ハイライト白 (#FFFFFF)
+#   下/右 = 暗: 外側 濃影 黒 (#000000) → 内側 影灰 (#808080)
+_FRAME_LIGHT = QColor("#DFDFDF")     # 外側・上左 (3DLIGHT)
+_FRAME_HILIGHT = QColor("#FFFFFF")   # 内側・上左 (BTNHIGHLIGHT)
+_FRAME_DKSHADOW = QColor("#000000")  # 外側・下右 (3DDKSHADOW)
+_FRAME_SHADOW = QColor("#808080")    # 内側・下右 (BTNSHADOW)
+_FRAME_WIDTH = 2                     # 片側の総厚 (= 外側 1px + 内側 1px)
 
 
 class _WindowFrame(QWidget):
@@ -47,17 +53,22 @@ class _WindowFrame(QWidget):
 
     def paintEvent(self, event) -> None:
         # drawLine は High-DPI で端の device pixel を取りこぼすため fillRect で
-        # 帯を塗る (論理矩形を device pixel まで正確に塗り、DPR 2 でも端が欠けない)。
+        # 1px 帯を 2 段重ねる (論理矩形を device pixel まで正確に塗り、DPR 2 でも
+        # 端が欠けない)。本物の Win95 窓枠と同じ「外側 1px + 内側 1px」の raised
+        # 2 段ベベル。上左 (明) を先・下右 (暗) を後に塗るので、右上/左下の隅は
+        # 暗が明に勝ち、ボタンではなく「窓」に見える raised の陰影になる。
         p = QPainter(self)
         w, h = self.width(), self.height()
-        fw = _FRAME_WIDTH
-        # 上辺・左辺 = 明 (白)
-        p.fillRect(0, 0, w, fw, _FRAME_LIGHT)        # 上 (全幅)
-        p.fillRect(0, 0, fw, h, _FRAME_LIGHT)        # 左 (全高)
-        # 下辺・右辺 = 暗 (隣接ウインドウとの境界をはっきり見せる)。最後に
-        # 描くので右上/左下の隅は暗が明に勝ち、Win95 風 raised の陰影になる。
-        p.fillRect(0, h - fw, w, fw, _FRAME_DARK)    # 下 (全幅)
-        p.fillRect(w - fw, 0, fw, h, _FRAME_DARK)    # 右 (全高)
+        # --- 外側リング (最端 1px): 上左 = 3DLIGHT, 下右 = 黒 ---
+        p.fillRect(0, 0, w, 1, _FRAME_LIGHT)           # 上
+        p.fillRect(0, 0, 1, h, _FRAME_LIGHT)           # 左
+        p.fillRect(0, h - 1, w, 1, _FRAME_DKSHADOW)    # 下
+        p.fillRect(w - 1, 0, 1, h, _FRAME_DKSHADOW)    # 右
+        # --- 内側リング (端から 1px 内): 上左 = 白, 下右 = 影灰 ---
+        p.fillRect(1, 1, w - 2, 1, _FRAME_HILIGHT)     # 上
+        p.fillRect(1, 1, 1, h - 2, _FRAME_HILIGHT)     # 左
+        p.fillRect(1, h - 2, w - 2, 1, _FRAME_SHADOW)  # 下
+        p.fillRect(w - 2, 1, 1, h - 2, _FRAME_SHADOW)  # 右
         p.end()
 
 
