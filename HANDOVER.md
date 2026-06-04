@@ -6,18 +6,18 @@
 ---
 
 ## 現状サマリ
-- 現在地: **M5f Phase 2① 完了 (2026-06-01)。フリーズ再発を受け、事件フォルダ走査を `os.scandir` 化して X:(Dropbox) の metadata 呼び出しを大幅削減、main push 済 (commit `7b953d9`、CI 成功 = artifact `k-file-windows` 48MB)。ユーザーが実機で効果測定中**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化
+- 現在地: **UI 操作性改善セッション 完了 (2026-06-04、commit `1a8113e`、CI 成功 = artifact `k-file-windows`)。β 試用フィードバックを受け ①ウインドウの全辺/全角リサイズ + Win95 風 2px 外枠 ②F4 でウインドウ幅を半分にトグル ③Inbox 既定ソートを Name 昇順 (新着が下) に変更。あわせて M5f Phase 2① (scandir 化) の実機効果測定が完了 = Win 実機でフリーズ再現なし・根治見込み (2026-06-04 ユーザー報告)。Win 機で 3 点の見た目/操作感を目視確認待ち**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化 → 2026-06-04 実機でフリーズ再現なし確認 + UI 操作性改善 (リサイズ/外枠/F4/Inbox ソート)
   - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O がメインスレッドをブロック** (詳細 §15 ADR-29/ADR-30)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
   - **Phase 2① の知見 (ADR-30)**: Phase 1 で消えなかったのは、固まるのが「選択→プレビュー」(I/O 無し) ではなく **一覧の構築 = 事件フォルダ走査** だったため。`Path.iterdir()` + 個別 `stat/is_dir/is_symlink` で 1 事件あたり数千回の metadata 呼び出しが X: を直列ブロックしていた (「stat 単発は速いが stat の山は遅い」)。`os.scandir` 化で列挙数回に削減 (出力は完全同一・非同期化なし = 軸A「作業量を減らす」)
   - **同セッションで「文字の描画モード切替 (ガタガタ/中間/なめらか)」を追加** (commit `f5cbbe2`、フリーズとは独立): モニタ解像度の好みで手動切替 (1080p のドット感 vs 4K の滑らかさ)。**表示メニュー**から選択、**同フォント・同サイズのまま `QFont.StyleStrategy` だけ 3 段階**、kfile.db 永続、起動時復元、**既定はガタガタ=レトロ維持**。詳細 §15 ADR-31
   - 2 回目検証で .k-photo (= 実際は `.kphoto` / `.kevi`) プレビュー / デスクトップフォルダ移動 / IPC ウインドウ単一性 / 日本語名・case_code 衝突 系は **問題なし** と判明
   - **本機 = Win 機**。CLAUDE.md / 旧記述の「本機 = Linux」は実態とズレ (2026-05-29 ユーザー確認、開発も配布確認もこの Win 機で実施)
 - スタック: Python + PySide6、PyInstaller `--onedir` + zip 配布 (M5c で `--onefile` から切替、起動 3-10 秒→1 秒)
-- UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)
+- UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)。ウインドウは frameless だが Win95 風 2px raised 外枠 + 全辺/全角リサイズを自前実装 (ADR-32/33)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **128 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py`)。Win venv は symlink 2 件 skip で **126 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
+- テスト: **134 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py`)。Win venv は symlink 2 件 skip で **132 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ
 
 ---
 
@@ -823,11 +823,49 @@
 - ユーザー差し替え (β.2 以降): 起動済 k-file の通知バナーから 1 クリック → 自動 DL
   → 確認 → 再起動で完了
 
+### M5g UI 操作性改善 — β 試用フィードバック反映 (2026-06-04 完了)
+
+β 業務並走でフリーズが収まった (M5f Phase 2① の実機効果測定で再現なし確認) のを
+受け、操作感のフィードバック 3 点を反映したセッション (commit `1a8113e`、CI 成功 =
+artifact `k-file-windows`)。詳細 §15 ADR-32/33/34。
+
+#### ① ウインドウの全辺/全角リサイズ + Win95 風外枠 (ADR-32 / ADR-33)
+- ✅ `src/ui/resize_grips.py` 新規。Frameless ウインドウの縁に透明グリップ
+  (左/右/下の辺 + 左下/右下の隅) を重ね、`windowHandle().startSystemResize(edge)`
+  で native リサイズ (title_bar の startSystemMove と同流儀、Win/Wayland 両対応)。
+  native 不可環境はフレームジオメトリ直接操作にフォールバック。
+- ✅ 上辺 + 左上隅は `title_bar.py` が処理 (上端 6px 帯 = リサイズ、それ以外 = 移動)。
+  **右上隅だけは × ボタンがあるため非対応** (右辺 + 上辺で代替、多くのアプリと同じ)。
+- ✅ 右下角のみだった `QSizeGrip` は撤去。最小ウインドウサイズ 700×460 を設定。
+- ✅ ウインドウ全体に Win95 風 2px raised 外枠 (`_WindowFrame`、最前面オーバーレイ、
+  マウス透過)。プレビュー有画面で右端の境界が消える問題を解消。`fillRect` で
+  High-DPI (DPR=2) でも端の device pixel が欠けない。
+- ✅ `MainWindow.resizeEvent` でグリップ・外枠を縁に追従 (`ResizeGrips.reposition`)。
+  最大化中はグリップを隠す (外枠は表示維持)。
+
+#### ② F4 でウインドウ幅を半分にトグル (高さ維持)
+- ✅ `MainWindow._toggle_half_width`: 1 回目で現在幅を記憶して半分に縮小、2 回目で
+  元の幅に復帰。高さは変えない。最大化中はまず通常表示に戻す。最小幅は尊重。
+- ✅ ファンクションキーバーに「半幅」(F4) を追加、`_on_fn_key` に結線。
+
+#### ③ Inbox 既定ソートを Name 昇順に変更 (新着が下)
+- ✅ `inbox_pane._populate` 末尾の初回既定を「更新降順」→「**Name 昇順**」に変更。
+  scan ファイルは `yyyymmddhhmm` 形式が多く、名前順 = 時系列順で新しいファイルほど
+  下に並ぶ。`_sort_initialized` フラグで初回のみ適用 = **手動ヘッダーソートは維持**。
+
+#### テスト / 確認
+- ✅ `tests/test_resize_grips.py` 6 件新規 (グリップ配置 / 辺・カーソル / 最大化時 hide /
+  外枠生成・マウス透過 / 外枠 bevel 描画 / タイトルバー上辺判定)。`tests/conftest.py`
+  新規 (widget 対応 QApplication を先に用意し QGuiApplication 衝突クラッシュを回避)。
+  全 134 件中 Win venv 132 passed / 2 skipped。
+- 🔲 **Win 機で目視確認待ち**: 外枠の見た目 (太さ/色み)、四辺/四隅のリサイズ掴み心地、
+  F4 半幅の幅感、Inbox が名前順で新着が下に来るか。
+
 ---
 
 ## 8. 次にやること
 
-### M5f フリーズ根治 Phase 1 (2026-05-29) + Phase 2① (2026-06-01) 完了 → 実機効果測定 → 残れば Phase 2②
+### M5f フリーズ根治 Phase 1 (2026-05-29) + Phase 2① (2026-06-01) 完了 → 実機効果測定 完了 (2026-06-04 再現なし=根治見込み) → Phase 2② は封印
 
 β.1 配布後、ユーザー業務並走で「**ファイルをクリックした時 / 移動・リネームした
 直後にアプリが固まり、強制終了せざるを得ない**」フリーズが頻発と報告。調査の結果、
@@ -858,13 +896,13 @@ folder_scanner はテスト未整備だった)。全 122 件中 Win venv 120 pas
 
 #### 次セッションでやる優先順
 
-1. **Phase 2① の実機効果測定** (ユーザーが測定中) ← まず最優先
-   - artifact zip (`k-file-windows-20260601-7b953d9.zip` をデスクトップに保存済) を
-     DL → 差し替え → 業務で使う (タグなし push のため **Release は作られず自動
-     アップデート通知は出ない。手動 DL 差し替え**)
-   - ✅ 確認: タブ切替 / サブフォルダを開く / 移動・リネーム直後 で**固まらなくなったか**
-   - ユーザー観測「**いつも固まるフォルダは決まっている気がする**」→ 残った場合の切り分けに使う
-2. **Phase 2② (①で残った場合のみ): 重いフォルダの別処理**
+1. ~~**Phase 2① の実機効果測定**~~ → **✅ 完了 (2026-06-04)**。Win 実機で業務並走し
+   「使用状況は良好で、いまのところフリーズが再現されることはない」とユーザー報告。
+   = 軸A「作業量を減らす」(scandir 化) **だけ**でフリーズ根治の見込み。よって下記
+   Phase 2② は**封印**し、発動条件は「特定の重いフォルダで再発した時だけ」に後退。
+   - ユーザー観測「**いつも固まるフォルダは決まっている気がする**」→ 万一再発したら
+     全体非同期化ではなく**その重いフォルダだけ別処理**に寄せる (下記 2 の指針)。
+2. **Phase 2② (封印中・①で再発した場合のみ): 重いフォルダの別処理**
    - ①で全走査が安くなれば「操作後 refresh は毎回全走査 = 常に ground truth」の単純さを
      保てる。残る場合の手は 2 つ: (a) 操作後 refresh の**差分更新** (走査ゼロ化。ただし
      delta 計算の正しさ + 全走査経路との二重管理/モデル drift が新リスク)、(b) コールド
@@ -1601,6 +1639,46 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
   字形依存。実機の 1080p/4K で目視し、「中間がガタガタと差がない」「なめらかが滲み
   すぎ」等あれば `_STRATEGIES` のフラグ (`PreferOutline`/`ForceOutline`/`PreferAntialias`
   /`PreferQuality` 等) を差し替えて微調整する。`_font_strategy._STRATEGIES` の 1 箇所のみ。
+
+### ADR-32: Frameless ウインドウのリサイズは透明グリップ overlay + startSystemResize で全辺対応 (2026-06-04)
+- **経緯**: リサイズが右下角 (`QSizeGrip` をステータスバーに 1 個) でしか掴めず使いにくい、
+  と β 試用フィードバック。Frameless ウインドウ (自作タイトルバー、ADR は無いが M1 から) は
+  OS の枠が無いのでリサイズは自前実装が要る。
+- **決定**: ウインドウ縁に**透明なグリップ widget を重ねる** (`src/ui/resize_grips.py`)。
+  各グリップは専用カーソル (↔/↕/⤢/⤡) を持ち、左ドラッグで `windowHandle().
+  startSystemResize(edge)` を呼ぶ (title_bar の `startSystemMove` と同じ native 流儀。
+  Win/Wayland 両対応)。native 不可環境はフレームジオメトリ直接操作にフォールバック。
+  - 左/右/下の辺 + 左下/右下の隅 = overlay グリップ (MainWindow の子、resizeEvent で追従)。
+  - 上辺 + 左上隅 = `title_bar.py` が処理 (上端 6px 帯 = リサイズ、それ以外 = 移動)。
+  - **右上隅だけ非対応**: × ボタンがあるため overlay を被せない。右辺 + 上辺で代替
+    (多くの実アプリと同じ妥協)。
+- **なぜ overlay 方式か**: 中央に QSplitter + 多数の子 widget があり、MainWindow 自身の
+  mouseMove でエッジ検出しようとすると子に食われる。各縁を専有する透明 widget なら
+  カーソルと press を確実に受けられる。最大化中はグリップを隠す (リサイズ不可)。
+- **副次**: 最小ウインドウサイズ 700×460 を設定 (3 ペインが潰れない下限)。
+
+### ADR-33: ウインドウ外枠は最前面オーバーレイ widget で描く (QMainWindow QSS 枠は使わない) (2026-06-04)
+- **経緯**: Frameless なので外枠が無く、特にプレビュー有画面で右端の境界が背景に溶けて
+  見えない、と β フィードバック。
+- **試したが不可**: QSS で `QMainWindow { border: ... }` を付けても窓の縁に描画されない
+  (QMainWindow は中央 widget / dock が枠領域を覆う既知の制約。pixmap grab で確認済)。
+- **決定**: ウインドウ全体を覆う透明オーバーレイ widget (`_WindowFrame`) を最前面に置き、
+  `paintEvent` で Win95 風 2px raised 枠 (上/左=明, 右/下=暗) だけを描く。中身は透過、
+  `WA_TransparentForMouseEvents` でマウスも素通り = リサイズグリップや操作を一切妨げない。
+  `ResizeGrips.reposition` でグリップと一緒に縁へ追従し、最大化中も枠は表示維持。
+- **High-DPI 対応**: `drawLine` は DPR=2 で端の device pixel を 1px 取りこぼすため、
+  4 辺を **`fillRect` で帯塗り** (論理矩形を device pixel まで正確に塗る)。pixmap grab で
+  「右下端まで暗・枠外は背景・右上隅は暗が勝つ raised 陰影」を検証済。
+
+### ADR-34: Inbox の既定ソートは Name 昇順 (新着が下) にする (2026-06-04)
+- **経緯**: 旧既定は「更新降順 (新着が上)」(M2)。だが scan で集まるファイルは
+  `yyyymmddhhmm` 形式の名前が多く、ユーザーは「名前順に並んでいて、新しいものが下に
+  ある」状態を好む (時系列に下へ積み上がる感覚)。
+- **決定**: `inbox_pane._populate` 末尾の**初回**既定を `sortItems(0, Ascending)` =
+  **Name 昇順**に変更。`yyyymmddhhmm` なら名前順 = 時系列順で新しいファイルほど下に並ぶ。
+  `_sort_initialized` フラグで初回のみ適用するので、**ユーザーがヘッダーを手動クリックして
+  別順にした場合はそれを保持** (KB/MB 切替や auto refresh で既定に戻さない) — この
+  「初回だけ既定・以降は手動尊重」の枠組み自体は従来どおり。
 
 ---
 
