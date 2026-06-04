@@ -202,7 +202,8 @@ class InboxPane(QWidget):
         # 縦スクロールバーを常時表示 (CasePane と viewport 幅を揃え、Name 列幅を
         # 両ペインで一致させるため。AsNeeded だと片方だけ 12px 狭くなる)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        # ヘッダー左クリック = ソート / 既定は「更新」降順 (新着順を維持)
+        # ヘッダー左クリック = ソート / 既定は Name 昇順 (yyyymmddhhmm 名なら
+        # 新しいファイルほど下に来る。詳細は _populate 末尾)
         self.table.setSortingEnabled(True)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_file_menu)
@@ -293,7 +294,7 @@ class InboxPane(QWidget):
         if tab != "全て":
             pool = [f for f in pool if f.source == tab]
         # ソートはテーブル側 (setSortingEnabled) に任せる。
-        # _populate の末尾で「更新降順」を既定として適用する。
+        # _populate の末尾で「Name 昇順」を既定として適用する。
         self._populate(pool)
         self.inboxChanged.emit(self.file_count())
 
@@ -362,11 +363,14 @@ class InboxPane(QWidget):
             self.table.setItem(r, 3, size_item)
             self.table.setRowHeight(r, 18)
         self.table.setSortingEnabled(True)
-        # 初回 populate 時のみ既定 (更新降順 = 新着順) を採用。以降は
-        # ユーザーがヘッダー左クリックで設定した順序を保持する
-        # (KB/MB 切替や Inbox 再走査で勝手に既定に戻さない)。
+        # 初回 populate 時のみ既定 (Name 昇順) を採用。以降はユーザーが
+        # ヘッダー左クリックで設定した順序を保持する (KB/MB 切替や Inbox
+        # 再走査で勝手に既定に戻さない)。
+        # Name 昇順を既定にする理由: scan ファイルは `yyyymmddhhmm` 形式が多く、
+        # 名前順 = 時系列順になり、新しいファイルほど下に並ぶ (ユーザー要望
+        # 2026-06-04)。明示的に別順にしたい時はヘッダーを手動クリックする。
         if not getattr(self, "_sort_initialized", False):
-            self.table.sortItems(2, Qt.SortOrder.DescendingOrder)
+            self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
             self._sort_initialized = True
         # ソート後の最終的な行配置で、保存しておいた path 群を再選択。restore に
         # 失敗した (= 選択中ファイルが全部消えた) ら同じ row index の隣接行へ

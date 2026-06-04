@@ -4,6 +4,9 @@ FramelessWindowHint 下で、Win95 風の細い紺色タイトルバーを自前
 - タイトル文字 (左)
 - 最小化 / 最大化 / × ボタン (右、各 14×12px)
 - ドラッグでウインドウ移動 (startSystemMove で Wayland 対応)
+- 上端 _RESIZE_MARGIN px は「上辺リサイズ」帯 (左上隅 / 右上隅も判定)。
+  ResizeGrips が担当する上辺・左上隅をここで補う (× ボタンに overlay を
+  被せないため、上側だけタイトルバー自身がリサイズを処理する)
 - ダブルクリックで最大化トグル
 - アクティブ / 非アクティブで背景色変化 (QSS の `[inactive=true]` 属性切替)
 """
@@ -19,6 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# 上辺リサイズ帯の厚み (px)。resize_grips._MARGIN と揃える。
+_RESIZE_MARGIN = 6
+
 
 class TitleBar(QWidget):
     def __init__(self, parent: QWidget, minimal: bool = False) -> None:
@@ -30,6 +36,8 @@ class TitleBar(QWidget):
         self._minimal = minimal
         # QSS background-color を素の QWidget に効かせるため
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # 上辺リサイズ帯にカーソルを出すためホバー move を受け取る。
+        self.setMouseTracking(True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
@@ -93,14 +101,50 @@ class TitleBar(QWidget):
     def set_title(self, text: str) -> None:
         self.title_label.setText(text)
 
+    def _resize_edges(self, pos) -> Qt.Edge | None:
+        """ホバー位置が上辺リサイズ帯なら掴む辺を返す (それ以外は None)。"""
+        if pos.y() > _RESIZE_MARGIN:
+            return None
+        edges = Qt.Edge.TopEdge
+        if pos.x() <= _RESIZE_MARGIN:
+            edges = edges | Qt.Edge.LeftEdge
+        elif pos.x() >= self.width() - _RESIZE_MARGIN:
+            edges = edges | Qt.Edge.RightEdge
+        return edges
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            handle = self.window().windowHandle()
+            win = self.window()
+            handle = win.windowHandle()
             if handle is not None:
+                # 上端帯ならリサイズ、それ以外はウインドウ移動。
+                edges = None if win.isMaximized() else self._resize_edges(
+                    event.position().toPoint()
+                )
+                if edges is not None and handle.startSystemResize(edges):
+                    event.accept()
+                    return
                 handle.startSystemMove()
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        # ボタン非押下時のホバーで上辺リサイズカーソルを出す。
+        if (
+            event.buttons() == Qt.MouseButton.NoButton
+            and not self.window().isMaximized()
+        ):
+            edges = self._resize_edges(event.position().toPoint())
+            if edges is None:
+                self.unsetCursor()
+            elif edges & Qt.Edge.LeftEdge:
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)   # 左上 "\"
+            elif edges & Qt.Edge.RightEdge:
+                self.setCursor(Qt.CursorShape.SizeBDiagCursor)   # 右上 "/"
+            else:
+                self.setCursor(Qt.CursorShape.SizeVerCursor)     # 上辺 ↕
+        super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if not self._minimal and event.button() == Qt.MouseButton.LeftButton:

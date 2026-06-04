@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenuBar,
-    QSizeGrip,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -47,6 +46,7 @@ from src.ui._font_strategy import (
 )
 from src.ui.preview_pane import PreviewPane
 from src.ui.rename_dialog import RenameDialog
+from src.ui.resize_grips import ResizeGrips
 from src.ui.settings_dialog import (
     KEY_QUICK_NOTES,
     KEY_QUICK_TEMP,
@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("K-FILE")
         self.resize(1400, 860)
+        # 3 ペイン構成が破綻しない下限 (これ以下に縮めさせない)。
+        self.setMinimumSize(700, 460)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         # フォルダを k-file ウインドウへ D&D で事件タブ追加 (HANDOVER §2)
         self.setAcceptDrops(True)
@@ -78,6 +80,8 @@ class MainWindow(QMainWindow):
         self._inbox_count = 0
         self._preview_visible = False  # 初期は 1:1 二カラム (F3 で展開)
         self._repo_cache: CaseRepo | None = None
+        # F4 で幅を半分にトグルする際、元の幅を覚えておく (None = 通常幅)。
+        self._half_width_prev: int | None = None
         # CLI 引数で渡されたフォルダ (K-SystemZ 連携 / 「k-file で開く」の窓口)。
         # セッション復元の後で追加し、最後の引数をアクティブタブにする (M6a / ADR-17)。
         self._initial_paths: list[Path] = list(initial_paths or [])
@@ -155,6 +159,10 @@ class MainWindow(QMainWindow):
             3, "ﾌﾟﾚﾋﾞｭｰ", enabled=True,
             tooltip="F3: プレビュー開閉 (二カラム ↔ 三カラム)",
         )
+        self.fn_bar.set_slot(
+            4, "半幅", enabled=True,
+            tooltip="F4: ウインドウ幅を半分にトグル (高さは維持 / もう一度で元に戻る)",
+        )
         self.fn_bar.set_slot(5, "更新", enabled=True, tooltip="F5: Inbox を更新")
         self.fn_bar.set_slot(
             8, "削除", enabled=True,
@@ -173,6 +181,11 @@ class MainWindow(QMainWindow):
         self._refresh_quick_slots()
 
         self.setCentralWidget(root)
+
+        # 全辺/全角リサイズグリップ (Frameless 用)。上辺・左上隅は TitleBar が
+        # 担当するので、ここでは左/右/下の辺 + 左下/右下の隅を縁に重ねる。
+        # resizeEvent で reposition して縁に追従させる。
+        self._resize_grips = ResizeGrips(self, top_inset=self.title_bar.height())
 
         # F2: フォーカスのあるペインで選択中ファイル/フォルダの rename
         # (Windows 標準。Inbox / 中央 どちらでも動く)
@@ -199,6 +212,11 @@ class MainWindow(QMainWindow):
         # F3: プレビュー開閉トグル (二カラム ↔ 三カラム)
         sc_toggle_preview = QShortcut(QKeySequence("F3"), self)
         sc_toggle_preview.activated.connect(self._toggle_preview)
+
+        # F4: ウインドウ幅を半分にトグル (高さは維持)。狭い作業 ↔ 広い作業の
+        # 切替を 1 キーで。もう一度押すと元の幅に戻る。
+        sc_half_width = QShortcut(QKeySequence("F4"), self)
+        sc_half_width.activated.connect(self._toggle_half_width)
 
         # F6 / F7: クイック起動フォルダ (雑記録 / 一時保管) をタブで開く
         sc_quick_notes = QShortcut(QKeySequence("F6"), self)
@@ -227,7 +245,8 @@ class MainWindow(QMainWindow):
         # 左を伸縮で確保し、path ラベルは内容に合わせた幅で右側に座る。これで
         # 「移動しました」などのトーストメッセージと共存できる。
         sb.addPermanentWidget(self.path_status_label)
-        sb.addPermanentWidget(QSizeGrip(self))
+        # 右下角の QSizeGrip は撤去 — リサイズは全辺/全角の ResizeGrips +
+        # タイトルバー上辺判定で担う (右下隅も bottom_right グリップが担当)。
         self.setStatusBar(sb)
         # 両ペインの選択モデル変化で path 表示を更新
         self.inbox_pane.table.selectionModel().selectionChanged.connect(
@@ -514,6 +533,8 @@ class MainWindow(QMainWindow):
             self._on_rename_in_case()
         elif k == 3:
             self._toggle_preview()
+        elif k == 4:
+            self._toggle_half_width()
         elif k == 5:
             self.inbox_pane.refresh()
         elif k == 6:
@@ -800,6 +821,23 @@ class MainWindow(QMainWindow):
         self._preview_visible = not self._preview_visible
         self._apply_pane_layout()
 
+    def _toggle_half_width(self) -> None:
+        """F4: ウインドウ幅を半分にトグルする (高さは変えない)。
+
+        1 回目で現在の幅を覚えて半分に縮め、2 回目で元の幅に戻す。最大化中は
+        まず通常表示に戻してから縮める (最大化の「画面いっぱいの幅」を半分に
+        しても意図に合わないため)。最小幅 (setMinimumSize) は下限として尊重。
+        """
+        if self.isMaximized():
+            self.showNormal()
+        if self._half_width_prev is None:
+            self._half_width_prev = self.width()
+            new_w = max(self.width() // 2, self.minimumWidth())
+            self.resize(new_w, self.height())
+        else:
+            self.resize(self._half_width_prev, self.height())
+            self._half_width_prev = None
+
     def eventFilter(self, obj, e) -> bool:  # noqa: N802 (Qt override)
         """Inbox / 中央テーブル の focus 切替で互いの選択を解除する。"""
         if e.type() == QEvent.Type.FocusIn:
@@ -824,6 +862,9 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
+        # リサイズグリップを新しい縁に追従させる (最大化/復元もここを通る)。
+        if hasattr(self, "_resize_grips"):
+            self._resize_grips.reposition()
         # ウインドウサイズ変化のたびに「Inbox 幅 ≒ 中央ファイル一覧幅」を再計算。
         # 注: この時点ではまだ splitter のサイズは古い (Qt のレイアウトパスが
         # この後に走る) ため、QTimer.singleShot(0) で 1tick 遅らせて
