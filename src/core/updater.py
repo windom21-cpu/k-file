@@ -7,7 +7,7 @@
 このモジュールは「ロジック」だけ (UI はここに置かない):
   - `fetch_latest_release()`     — GitHub Releases API call (blocking)
   - `pick_zip_asset()`           — JSON から zip アセットを 1 件選ぶ
-  - `write_updater_batch()`      — Windows バッチを書き出す
+  - `write_updater_script()`     — 更新適用用の PowerShell スクリプトを書き出す
   - `default_updates_dir()`      — `%APPDATA%/k-file/updates/` を返す
 
 UI 側 (status bar / 進捗 / 確認) と DL 進捗ストリーミングは `ui/update_banner.py`
@@ -154,105 +154,112 @@ def default_updates_dir() -> Path:
     return Path.home() / ".config" / "k-file" / "updates"
 
 
-def write_updater_batch(
+def _ps_quote(value: str) -> str:
+    """PowerShell の単一引用符リテラルに安全に埋める ('' で ' をエスケープ)。"""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def write_updater_script(
     install_dir: Path,
     zip_path: Path,
     new_exe_name: str = "k-file.exe",
-    batch_path: Path | None = None,
+    script_path: Path | None = None,
 ) -> Path:
-    """Windows バッチを書き出して、その絶対パスを返す。
+    """更新適用用の **PowerShell スクリプト** を書き出し、その絶対パスを返す。
 
     install_dir: 現 k-file がインストールされているフォルダ
-                 (例: `C:\\Users\\xxx\\k-file`、PyInstaller --onedir の dist フォルダ)
+                 (例: `C:\\Users\\xxx\\k-file-windows`、PyInstaller --onedir のフォルダ)
     zip_path:    DL 済みの zip ファイルパス
     new_exe_name: 起動する .exe 名 (zip 展開後の install_dir/<new_exe_name>)
-    batch_path:  書き出し先。未指定なら zip 隣りに `apply_update.bat`
+    script_path: 書き出し先。未指定なら zip 隣りに `apply_update.ps1`
 
-    バッチの動作:
-      0. 作業フォルダを %TEMP% に移す (install_dir を CWD にしたままだと
-         install_dir 自身を ren できないため。Explorer/K-SystemZ から起動された
-         k-file.exe の CWD は install_dir のことが多い)
-      1. k-file.exe プロセス消滅まで wait (タスクリスト確認、最大 30 秒)
-         待機は `ping` で行う。`timeout` は console=False の windowed app から
-         DETACHED で起動したバッチでは「コンソールなし」で即エラーになり待てない
+    動作:
+      1. k-file プロセス消滅まで wait (最大 30 秒、Get-Process でポーリング)
       2. install_dir を install_dir + ".old" にリネーム (バックアップ)
          失敗 = フォルダがまだ使用中 → 旧版を起動し直してユーザーを取り残さない
-      3. PowerShell Expand-Archive で zip を install_dir に展開
+      3. Expand-Archive で zip を install_dir に展開
          新 exe が出てこなければロールバック (.old を元名に戻す)
-      4. 新 install_dir/k-file.exe を起動
-      5. .old フォルダ削除 (失敗しても黙る、AV スキャン中など)
+      4. 新 install_dir/<new_exe_name> を起動
+      5. .old フォルダ削除 (失敗しても黙る)
 
-    各ステップは `%~dp0updater.log` に追記する (失敗が「無反応」に見えないように。
-    error.log と同じ "困ったらログを見る" 運用)。
+    各ステップは スクリプトと同じフォルダの `updater.log` に追記する。
+
+    **なぜ cmd バッチでなく PowerShell か** (2026-06-04 ADR-36): cmd バッチを
+    DETACHED_PROCESS (コンソールなし) で起動すると `tasklist | findstr` パイプが
+    デッドロックしてハングし、`timeout`/`ping` 等のコンソール依存コマンドも不安定
+    だった (実機で再起動後ハング)。PowerShell の Get-Process / Expand-Archive /
+    Start-Process はコンソール非依存で、`CREATE_NO_WINDOW` (隠しコンソール) 起動で
+    確実に完走する (実機検証済)。呼び出し側は update_banner が CREATE_NO_WINDOW で起動。
     """
-    if batch_path is None:
-        batch_path = zip_path.with_name("apply_update.bat")
+    if script_path is None:
+        script_path = zip_path.with_name("apply_update.ps1")
     install_dir = install_dir.resolve()
     zip_path = zip_path.resolve()
     old_dir = install_dir.with_name(install_dir.name + ".old")
     new_exe = install_dir / new_exe_name
+    # Get-Process は .exe を除いた名前を取る (k-file.exe → "k-file")
+    proc_base = new_exe_name[:-4] if new_exe_name.lower().endswith(".exe") else new_exe_name
 
-    # cmd.exe バッチは ANSI / SJIS で UTF-8 BOM 無しが安全。エスケープは
-    # 二重引用符でくくり、変数展開は `%~dp0` 等を活用。
-    # 分岐は () ブロックを避け goto ラベルで書く (パス中の特殊文字で壊れにくい)。
+    q_install = _ps_quote(str(install_dir))
+    q_old = _ps_quote(str(old_dir))
+    q_zip = _ps_quote(str(zip_path))
+    q_exe = _ps_quote(str(new_exe))
+    q_install_leaf = _ps_quote(install_dir.name)
+    q_old_leaf = _ps_quote(old_dir.name)
+    q_proc = _ps_quote(proc_base)
+
     lines = [
-        "@echo off",
-        "setlocal enableextensions",
-        'set "LOG=%~dp0updater.log"',
-        'echo [%date% %time%] updater start >> "%LOG%"',
-        # install_dir を CWD にしたままだと ren できないので外へ退避
-        'cd /d "%TEMP%" 2>nul',
-        # k-file.exe が落ちるまで wait (最大 30 秒、約 1 秒間隔)。
-        # timeout はコンソールなしで効かないので ping で待つ。
-        "set /a TRIES=30",
-        ":wait_loop",
-        f'tasklist /FI "IMAGENAME eq {new_exe_name}" '
-        f'| findstr /I "{new_exe_name}" >nul',
-        "if errorlevel 1 goto proceed",
-        "set /a TRIES=TRIES-1",
-        "if %TRIES% LEQ 0 goto proceed",
-        "ping -n 2 127.0.0.1 >nul",
-        "goto wait_loop",
-        ":proceed",
-        'echo [%date% %time%] wait done TRIES=%TRIES% >> "%LOG%"',
-        # 旧 .old が残っていれば先に削除 (前回失敗の痕跡)
-        f'if exist "{old_dir}" rmdir /S /Q "{old_dir}" >> "%LOG%" 2>&1',
-        # 現フォルダを .old にリネーム (バックアップ)
-        f'ren "{install_dir}" "{install_dir.name}.old"',
-        "if errorlevel 1 goto ren_failed",
-        # zip を install_dir に展開 (CI は dist/k-file/* を直に zip 化 = 中身が
-        # install_dir 直下に出る)
-        f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-        f'"Expand-Archive -LiteralPath \'{zip_path}\' '
-        f'-DestinationPath \'{install_dir}\' -Force" >> "%LOG%" 2>&1',
-        # 展開後に新 exe が無ければ展開失敗 → ロールバック
-        f'if not exist "{new_exe}" goto expand_failed',
-        'echo [%date% %time%] update applied OK >> "%LOG%"',
-        # 新版起動 (待たない)
-        f'start "" "{new_exe}"',
-        # 旧フォルダクリーンアップ (失敗しても OK)
-        f'rmdir /S /Q "{old_dir}" >> "%LOG%" 2>&1',
-        "goto end",
-        # ── ren に失敗 = フォルダがまだ使用中。無傷なので旧版を起動し直す ──
-        ":ren_failed",
-        'echo [%date% %time%] ERROR ren failed (folder in use) >> "%LOG%"',
-        f'start "" "{new_exe}"',
-        "goto end",
-        # ── 展開に失敗 = 新 exe が無い。.old を元名に戻して旧版を起動 ──
-        ":expand_failed",
-        'echo [%date% %time%] ERROR expand failed, rolling back >> "%LOG%"',
-        f'if exist "{install_dir}" rmdir /S /Q "{install_dir}" >> "%LOG%" 2>&1',
-        f'ren "{old_dir}" "{install_dir.name}"',
-        f'start "" "{new_exe}"',
-        "goto end",
-        ":end",
-        'echo [%date% %time%] updater end >> "%LOG%"',
-        "endlocal",
-        "exit /b 0",
+        "$ErrorActionPreference = 'Continue'",
+        "$log = Join-Path $PSScriptRoot 'updater.log'",
+        "function Log($m) {",
+        '  "$(Get-Date -Format o) $m" | Out-File -FilePath $log -Append -Encoding utf8',
+        "}",
+        f"$install = {q_install}",
+        f"$old = {q_old}",
+        f"$zip = {q_zip}",
+        f"$exe = {q_exe}",
+        "Log 'updater start'",
+        # k-file が終了するまで最大 30 秒待つ (Get-Process でポーリング)
+        "$deadline = (Get-Date).AddSeconds(30)",
+        f"while ((Get-Process -Name {q_proc} -ErrorAction SilentlyContinue) "
+        "-and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 400 }",
+        "Log 'wait done'",
+        # 前回の .old が残っていれば掃除 → 現フォルダを .old にリネーム
+        "try {",
+        "  if (Test-Path -LiteralPath $old) { "
+        "Remove-Item -LiteralPath $old -Recurse -Force }",
+        f"  Rename-Item -LiteralPath $install -NewName {q_old_leaf} -ErrorAction Stop",
+        "} catch {",
+        '  Log "ERROR rename failed: $_"',
+        # フォルダ無傷 → 旧版を起動し直してユーザーを取り残さない
+        "  Start-Process -FilePath $exe",
+        "  exit",
+        "}",
+        # zip を install_dir に展開 (CI は dist/k-file/* を直に zip 化)
+        "try {",
+        "  Expand-Archive -LiteralPath $zip -DestinationPath $install -Force "
+        "-ErrorAction Stop",
+        "} catch {",
+        '  Log "ERROR expand: $_"',
+        "}",
+        # 新 exe が無ければ展開失敗 → .old を元名に戻してロールバック
+        "if (-not (Test-Path -LiteralPath $exe)) {",
+        "  Log 'expand failed, rolling back'",
+        "  if (Test-Path -LiteralPath $install) { "
+        "Remove-Item -LiteralPath $install -Recurse -Force }",
+        f"  Rename-Item -LiteralPath $old -NewName {q_install_leaf}",
+        "  Start-Process -FilePath $exe",
+        "  exit",
+        "}",
+        "Log 'update applied OK'",
+        "Start-Process -FilePath $exe",
+        "Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue",
+        "Log 'updater end'",
     ]
-    batch_path.parent.mkdir(parents=True, exist_ok=True)
-    batch_path.write_text("\r\n".join(lines) + "\r\n", encoding="cp932")
-    return batch_path
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    # UTF-8 BOM 付きで書く (Windows PowerShell 5.1 が非 ASCII パスを正しく読むため)
+    script_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig")
+    return script_path
 
 
 def install_dir_from_exe() -> Path | None:

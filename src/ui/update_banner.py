@@ -41,7 +41,7 @@ from src.core.updater import (
     default_updates_dir,
     find_newer_release,
     install_dir_from_exe,
-    write_updater_batch,
+    write_updater_script,
 )
 
 
@@ -312,21 +312,24 @@ class UpdateManager(QObject):
                 "次回起動時に再度通知します。",
             )
             return
-        # updater バッチを書き出して launch detached → k-file 終了
-        batch_path = write_updater_batch(install_dir, zip_path)
+        # updater (PowerShell スクリプト) を書き出して起動 → k-file 終了。
+        script_path = write_updater_script(install_dir, zip_path)
         try:
-            # detached 起動 (k-file が終わっても batch は走り続ける)。
-            # cwd は install_dir の外 (= %TEMP%) に固定する。cmd.exe の CWD が
-            # install_dir 内だと install_dir 自身を ren できず更新が失敗するため
-            # (batch 側でも cd /d %TEMP% するが二重防御)。
+            # PowerShell を CREATE_NO_WINDOW (隠しコンソール付き) で起動する。
+            # DETACHED_PROCESS (コンソールなし) だと cmd の tasklist|findstr パイプが
+            # デッドロックしハングした (ADR-36)。CREATE_NO_WINDOW なら Get-Process /
+            # Expand-Archive / Start-Process が確実に動き、窓も出ない (実機検証済)。
+            # cwd は install_dir の外 (= %TEMP%) に固定 (install_dir を CWD にすると
+            # rename できないため)。k-file が終了しても本プロセスは生き続ける。
+            no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             subprocess.Popen(
-                ["cmd.exe", "/c", str(batch_path)],
+                [
+                    "powershell.exe", "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", str(script_path),
+                ],
                 cwd=tempfile.gettempdir(),
-                creationflags=(
-                    subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
-                    if sys.platform == "win32"
-                    else 0
-                ),
+                creationflags=(no_window if sys.platform == "win32" else 0),
                 close_fds=True,
             )
         except OSError as e:
@@ -334,7 +337,7 @@ class UpdateManager(QObject):
                 self._main_window,
                 "updater 起動失敗",
                 f"updater の起動に失敗しました:\n{e}\n\n"
-                f"手動適用してください:\n{batch_path}",
+                f"手動適用してください:\n{script_path}",
             )
             return
         # k-file 自身を終了 (updater は k-file.exe が消えるのを待ってから動く)

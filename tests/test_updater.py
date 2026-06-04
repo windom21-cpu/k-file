@@ -19,7 +19,7 @@ from src.core.updater import (
     fetch_latest_release,
     find_newer_release,
     pick_zip_asset,
-    write_updater_batch,
+    write_updater_script,
 )
 
 
@@ -152,47 +152,62 @@ def test_find_newer_release_when_remote_is_older():
     assert rel is None
 
 
-# ───────── write_updater_batch ─────────
+# ───────── write_updater_script ─────────
 
 
-def test_write_updater_batch_creates_file(tmp_path: Path):
+def test_write_updater_script_creates_file(tmp_path: Path):
     install_dir = tmp_path / "k-file"
     install_dir.mkdir()
     zip_path = tmp_path / "k-file-windows.zip"
     zip_path.write_bytes(b"PK\x03\x04")
 
-    batch = write_updater_batch(install_dir, zip_path)
-    assert batch.exists()
-    content = batch.read_text(encoding="cp932")
-    # 主要要素が含まれていること
-    assert "tasklist" in content
-    assert "k-file.exe" in content
+    script = write_updater_script(install_dir, zip_path)
+    assert script.exists()
+    assert script.name == "apply_update.ps1"
+    content = script.read_text(encoding="utf-8-sig")
+    # 主要要素 (PowerShell コマンド + パス) が含まれていること
     assert "Expand-Archive" in content
+    assert "Start-Process" in content
     assert str(install_dir) in content
     assert str(zip_path) in content
-    # CRLF 改行 (Windows バッチ用)
-    assert "\r\n" in batch.read_bytes().decode("cp932")
+    # CRLF + UTF-8 BOM (Windows PowerShell 5.1 が非 ASCII パスを読むため)
+    raw = script.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert b"\r\n" in raw
 
-    # ── フリーズ/無反応バグ修正の回帰ガード ──
-    # CWD を install_dir 外へ退避していること (install_dir 自己ロック対策)
-    assert "cd /d" in content
-    # 待機は console 非依存の ping。timeout は console=False の DETACHED
-    # バッチで効かないので使わない
-    assert "ping -n" in content
-    assert "timeout" not in content
-    # 失敗時の分岐 (ren 失敗 / 展開失敗ロールバック) と診断ログがあること
-    assert ":ren_failed" in content
-    assert ":expand_failed" in content
+    # ── ハング/無反応バグ修正の回帰ガード (ADR-36) ──
+    # ① cmd の tasklist|findstr パイプ・ping・timeout を使わない
+    #    (DETACHED コンソールなしで不安定/ハングするため)
+    assert "tasklist" not in content
+    assert "ping " not in content
+    assert "timeout " not in content
+    # ② プロセス終了待ちは Get-Process でポーリング
+    assert "Get-Process" in content
+    # ③ rename 失敗 / 展開失敗ロールバック / 診断ログ
+    assert "rename failed" in content
+    assert "rolling back" in content
     assert "updater.log" in content
 
 
-def test_write_updater_batch_custom_path(tmp_path: Path):
+def test_write_updater_script_custom_path(tmp_path: Path):
     install_dir = tmp_path / "k-file"
     install_dir.mkdir()
     zip_path = tmp_path / "k-file-windows.zip"
     zip_path.write_bytes(b"x")
-    custom = tmp_path / "custom_dir" / "apply.bat"
+    custom = tmp_path / "custom_dir" / "apply.ps1"
 
-    batch = write_updater_batch(install_dir, zip_path, batch_path=custom)
-    assert batch == custom
-    assert batch.exists()
+    script = write_updater_script(install_dir, zip_path, script_path=custom)
+    assert script == custom
+    assert script.exists()
+
+
+def test_write_updater_script_quotes_paths_with_apostrophe(tmp_path: Path):
+    # パスに ' が含まれても PowerShell リテラルが壊れないこと ('' エスケープ)
+    install_dir = tmp_path / "o'brien-k-file"
+    install_dir.mkdir()
+    zip_path = tmp_path / "k-file-windows.zip"
+    zip_path.write_bytes(b"x")
+
+    script = write_updater_script(install_dir, zip_path)
+    content = script.read_text(encoding="utf-8-sig")
+    assert "o''brien-k-file" in content
