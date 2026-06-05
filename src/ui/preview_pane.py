@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -210,8 +211,16 @@ class PreviewPane(QWidget):
         outer.addWidget(PaneHeader("プレビュー"))
 
         # 現在見ているファイルの情報を 1 行で常時表示 (業務で「これ何だっけ」防止)
+        self._info_full = ""   # 省略前のフル文字列 (resize で再 elide するため保持)
         self._info_label = QLabel("")
         self._info_label.setObjectName("previewInfo")
+        # 横方向は Ignored: 長いファイル名でもラベルが「自分の幅」を主張しない。
+        # これをしないと折返し無し QLabel の minimumSizeHint = 全文幅 となり、
+        # プレビューペインの最小幅がファイル名の長さぶん膨らみ、splitter が
+        # プレビューを広げて INBOX だけを極端に狭くしてしまう (2026-06-05 修正)。
+        self._info_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._info_label.setStyleSheet(
             "QLabel#previewInfo {"
             "  background-color: #FFFFFF;"
@@ -266,6 +275,30 @@ class PreviewPane(QWidget):
         self._loading_timer.setSingleShot(True)
         self._loading_timer.setInterval(150)
         self._loading_timer.timeout.connect(self._show_loading)
+
+    def _set_info_text(self, text: str) -> None:
+        """上部情報行のテキストを設定 (幅に合わせて右省略表示する)。
+
+        フル文字列は _info_full に保持し、resizeEvent で再 elide する。
+        """
+        self._info_full = text
+        self._elide_info()
+
+    def _elide_info(self) -> None:
+        """保持中のフル文字列を現在のラベル幅に合わせて右省略する。"""
+        fm = self._info_label.fontMetrics()
+        avail = self._info_label.width() - 8   # padding 0 4px ぶんを控除
+        if avail <= 0 or not self._info_full:
+            # まだ幅が確定していない (表示前) 等はフルのまま (clip は Qt 任せ)
+            self._info_label.setText(self._info_full)
+            return
+        self._info_label.setText(
+            fm.elidedText(self._info_full, Qt.TextElideMode.ElideRight, avail)
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._elide_info()
 
     def _build_pdf_page(self) -> QWidget:
         """QPdfView + 下端のページ送りバーをまとめた PDF 表示ウィジェット。"""
@@ -394,7 +427,7 @@ class PreviewPane(QWidget):
         self._release_pdf()
         self._image_view.set_image(QPixmap())
         self._text_view.clear()
-        self._info_label.setText("")
+        self._set_info_text("")
         self._info_label.setToolTip("")
         self._show_message("ファイルを選択するとプレビュー表示")
 
@@ -448,10 +481,10 @@ class PreviewPane(QWidget):
             parts = [p.name, size_text, mtime_text]
             if extra:
                 parts.append(extra)
-            self._info_label.setText("/".join(parts))
+            self._set_info_text("/".join(parts))
             self._info_label.setToolTip(str(p))
         except OSError:
-            self._info_label.setText(p.name)
+            self._set_info_text(p.name)
             self._info_label.setToolTip(str(p))
 
     def _render_pdf(self, result: _LoadResult) -> None:

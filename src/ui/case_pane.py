@@ -1780,13 +1780,27 @@ class CasePane(QWidget):
             return
         self.table.setColumnHidden(1, False)
         self.table.setColumnHidden(3, False)
-        viewport_w = self.table.viewport().width()
+        # 基準幅は MainWindow が両ペイン共通値 (_shared_name_width) を渡していれば
+        # それを使う (InboxPane と同方針)。自前 viewport だと INBOX と参照フォルダで
+        # 数 px ずれ、その差が 30px 閾値をまたぐと片方だけ更新列が消えて Name 幅が
+        # 半々にならない (F4 半幅時 / Win で参照フォルダにファイルが多い時に頻発)。
+        shared = getattr(self, "_shared_name_width", None)
+        viewport_w = shared if shared else self.table.viewport().width()
         date_avail = viewport_w - (60 + 90 + 120)
         if date_avail < 30:
             self.table.setColumnHidden(2, True)
         else:
             self.table.setColumnHidden(2, False)
             self.table.setColumnWidth(2, min(date_avail, 130))
+
+    def set_shared_name_width(self, width: int | None) -> None:
+        """MainWindow から INBOX / 参照フォルダ共通の基準幅を受け取る。
+
+        両ペインで更新列の出し入れ判定を完全に一致させるためのフック。None を
+        渡すと自前 viewport にフォールバックする (単体利用 / テスト時)。
+        """
+        self._shared_name_width = width
+        self._apply_responsive_columns()
 
     def set_inbox_file_getter(self, getter) -> None:
         """右クリック投入メニューが Inbox の選択ファイル名を問い合わせる getter。

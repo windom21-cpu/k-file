@@ -6,8 +6,8 @@
 ---
 
 ## 現状サマリ
-- 現在地: **2026-06-05 セッションで 🎉「自動アップデート機構 (案②) が実機で全工程動作」を初めて確認 (β.5→β.6)。経緯: β.1/β.2 同梱の updater (再起動後「無反応」) を調べると updater バッチに 3 欠陥 → 直したが β.3/β.4 は今度は「再起動後ハング」(cmd を DETACHED=コンソールなしで起動すると `tasklist | findstr` パイプがデッドロック)。実機で対照実験し、updater を `cmd バッチ` → `PowerShell + CREATE_NO_WINDOW` に全面作り直し (commit `aa732dc`、ADR-36) → β.5 で実機エンドツーエンド成功 (フォルダ入替→展開→旧版掃除→再起動)。ADR-35 (正常終了の error.log 誤記録停止 + IPC 非同期化) も β.5 で実機反映 = error.log の SystemExit:0 ノイズ停止を確認。あわせて about ダイアログの version ハードコード "M5" を実 VERSION 表示に修正 (commit `231c1c2`)、更新通知バナーがステータスバー (16px) で見切れる UI を低背 QSS で修正 (β.7)。次の能動アクションは β.7 への自動更新 (= バナー修正の反映 + 更新機構の再確認) + 業務並走**
-  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化 → 2026-06-04 実機でフリーズ再現なし確認 + UI 操作性改善 (リサイズ/外枠/F4/Inbox ソート) → 2026-06-04 外枠を 2 段 4 色 raised に polish + `v0.1.0-beta.2` タグ切り + M5f Phase 3 掃除 (error.log 誤記録 / IPC 非同期化) → 2026-06-05 自動アップデート実機検証で updater のハング根治 (cmd→PowerShell 化、ADR-36) → β.3〜β.6 を順次切り、β.5→β.6 で**案②が実機で全工程動作することを初確認** → バナー見切れ修正で β.7
+- 現在地: **2026-06-05 セッション後半でレイアウト崩れ 2 件を根治し `v0.1.0-beta.8` を切った。①F4 半幅時に INBOX と参照フォルダで「更新列」が片方だけ消えて Name (ファイル名) 列幅が半々にならない現象 (両ペインが別々の viewport で 30px 閾値を独立判定 → 数 px 差が閾値をまたぐと片方だけ更新列が消える。Linux でも幅 831〜835px で再現。MainWindow が両テーブルの実 viewport の小さい方を共通基準に配って判定を一致させる、ADR-38) ②プレビュー表示中に「たまに INBOX だけ極端に狭くなる」現象 (情報行 QLabel が折返し無し = minimumSizeHint が全文幅 → 長いファイル名でプレビューペイン最小幅が 316→993px に膨張し splitter が preview を広げて inbox の幅を奪う。横 SizePolicy=Ignored + 右省略表示に変更、ADR-39)。直前の到達点は 🎉「自動アップデート機構 (案②) が実機で全工程動作」を β.5→β.6 で初確認 + 更新通知バナーの見切れ修正 (β.7、ADR-37)。なお β.1/β.2 同梱 updater は「再起動後無反応」、β.3/β.4 は「再起動後ハング」(cmd を DETACHED 起動すると `tasklist | findstr` パイプがデッドロック) を経て、updater を `cmd バッチ` → `PowerShell + CREATE_NO_WINDOW` に全面作り直し (commit `aa732dc`、ADR-36) で β.5 実機エンドツーエンド成功。次の能動アクションは β.8 への自動更新で両レイアウト修正を Win 実機確認 (特に F4 半幅 + 長いファイル名プレビュー) + 業務並走**
+  - M1〜M5b 完了 → 2026-05-25 1 回目 Win 機本番テスト → M5c で業務凍結級バグ + 設計修正 → 2026-05-26 2 回目検証 → M5d で消化 → 2026-05-27 M5e で β 直前 polish + 自動アップデート機構 (案②) → `v0.1.0-beta.1` タグ切り → 2026-05-29 M5f Phase 1 で preview 読込を別スレッド化 → 2026-06-01 M5f Phase 2① で再発フリーズ (一覧走査が主因と判明) に対し folder_scanner を scandir 化 → 2026-06-04 実機でフリーズ再現なし確認 + UI 操作性改善 (リサイズ/外枠/F4/Inbox ソート) → 2026-06-04 外枠を 2 段 4 色 raised に polish + `v0.1.0-beta.2` タグ切り + M5f Phase 3 掃除 (error.log 誤記録 / IPC 非同期化) → 2026-06-05 自動アップデート実機検証で updater のハング根治 (cmd→PowerShell 化、ADR-36) → β.3〜β.6 を順次切り、β.5→β.6 で**案②が実機で全工程動作することを初確認** → バナー見切れ修正で β.7 → 2026-06-05 レイアウト崩れ 2 件 (F4 半幅の更新列同期 ADR-38 / プレビュー情報行の幅暴走 ADR-39) を根治して β.8
   - **フリーズの主因 = 事件フォルダ (= Dropbox を X ドライブにレジストリマウント) 上のファイルの同期 I/O がメインスレッドをブロック** (詳細 §15 ADR-29/ADR-30)。Inbox は全てローカルなので無傷で、事件 (X:) 側操作で固まる非対称と一致
   - **Phase 2① の知見 (ADR-30)**: Phase 1 で消えなかったのは、固まるのが「選択→プレビュー」(I/O 無し) ではなく **一覧の構築 = 事件フォルダ走査** だったため。`Path.iterdir()` + 個別 `stat/is_dir/is_symlink` で 1 事件あたり数千回の metadata 呼び出しが X: を直列ブロックしていた (「stat 単発は速いが stat の山は遅い」)。`os.scandir` 化で列挙数回に削減 (出力は完全同一・非同期化なし = 軸A「作業量を減らす」)
   - **同セッションで「文字の描画モード切替 (ガタガタ/中間/なめらか)」を追加** (commit `f5cbbe2`、フリーズとは独立): モニタ解像度の好みで手動切替 (1080p のドット感 vs 4K の滑らかさ)。**表示メニュー**から選択、**同フォント・同サイズのまま `QFont.StyleStrategy` だけ 3 段階**、kfile.db 永続、起動時復元、**既定はガタガタ=レトロ維持**。詳細 §15 ADR-31
@@ -17,7 +17,7 @@
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)。ウインドウは frameless だが Win95/98 風 **2 段 4 色 raised 外枠** (外側 #DFDFDF/#000000 + 内側 #FFFFFF/#808080) + 全辺/全角リサイズを自前実装 (ADR-32/33)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **139 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py`)。Win venv は symlink 2 件 skip で **137 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ。⚠ `test_ipc.py` は本番と同じ単一インスタンスキー (`k-file-instance-v1`) を使うため、**k-file 実機が起動中だと衝突して落ちる** (テスト分離の TODO)。roundtrip は本番同様の別プロセス送信 (subprocess) で検証
+- テスト: **144 件** (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py` / `test_pane_layout.py`)。Win venv は symlink 2 件 skip で **142 passed / 2 skipped**、Linux python3 では symlink 分岐込みで全緑。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。CI (build.yml) は pytest を走らせず .exe ビルドのみ。⚠ `test_ipc.py` は本番と同じ単一インスタンスキー (`k-file-instance-v1`) を使うため、**k-file 実機が起動中だと衝突して落ちる** (テスト分離の TODO)。roundtrip は本番同様の別プロセス送信 (subprocess) で検証
 
 ---
 
@@ -1791,6 +1791,36 @@ git config --global user.email "279377893+windom21-cpu@users.noreply.github.com"
 - **決定**: `#updateBannerBtn` / `#updateBannerLabel` を低背・薄パディング (ボタン 14px 高・
   `min-width:0`・`padding:0 6px`・9pt) に QSS で上書きし、`UpdateBanner` 自体を `setFixedHeight(16)`。
   オフスクリーン pixmap grab で 16px バー内にボタン・文字が収まることを目視検証。β.7 で反映。
+
+### ADR-38: 更新列の出し入れは両ペイン共通基準で判定する (F4 半幅の Name 幅食い違い根治) (2026-06-05)
+- **症状**: F4 でウインドウ幅を半分にすると、INBOX と参照フォルダで Name (ファイル名) 列幅が
+  大きく食い違うことがある。「参照フォルダにファイル/ディレクトリが多いと出やすい・条件不明」と
+  ユーザー報告。Win で目立つが Linux でも幅 831〜835px で再現した。
+- **原因**: 両ペインの `_apply_responsive_columns` が *それぞれ自前の* `table.viewport().width()` で
+  「更新列を出すか隠すか (`残り = viewport - 270 < 30` なら隠す)」を独立判定していた。左カラム/枠/
+  スクロールバーの誤差で両 viewport は常に 2〜3px ずれており、その差が 30px 閾値をまたぐ幅では
+  *片方だけ* 更新列が消え、Name 列が ~37px ずれる。F4 は幅を半分にするので、元幅次第で半幅が
+  ちょうどこの「閾値バンド」に着地する。Win では参照フォルダのファイル数でスクロールバーの
+  有効/無効が変わり viewport が更に数 px ずれてバンドが広がる/ずれる = 「多いと頻発・条件不明」。
+- **決定**: 判定を両ペインで *必ず一致* させる。MainWindow `_sync_responsive_columns` が両テーブルの
+  実 viewport の小さい方を共通基準にして `inbox_pane/case_pane.set_shared_name_width(w)` へ配り、
+  各ペインはその共通幅で 30px 閾値を判定する (None なら自前 viewport にフォールバック = 単体/テスト用)。
+  `_apply_pane_layout` 後の `singleShot(0)` で geometry 確定後に同期。掃引 700〜1700px で
+  更新列の不一致ゼロ・Name 残差 ≤3px を確認 (`tests/test_pane_layout.py`)。残る 2〜3px は左カラム/枠の
+  固定誤差ぶんでサブ文字幅 = 体感無視できる範囲 (大ズレの 37px は消えた)。
+
+### ADR-39: プレビュー上部の情報行は幅を主張させない (横 SizePolicy=Ignored + 右省略) (2026-06-05)
+- **症状**: プレビュー表示中 (3 カラム)、たまに INBOX *だけ* が極端に狭くなる。発生はファイル次第で
+  「条件不明」とユーザー報告。
+- **原因**: プレビュー上部の情報行 QLabel (`previewInfo`、`名前 / サイズ / 日付 / ページ数` を 1 行表示) が
+  折返し無しのため、Qt 上で `minimumSizeHint().width() = 全文の幅` になる。長いファイル名を選ぶと
+  それだけでプレビューペインの最小幅が 316px → 993px に膨張 (実測)。splitter は
+  `setChildrenCollapsible(False)` でペインを潰せないため、膨らんだ最小幅を確保しようと preview を
+  広げ、左端の INBOX から幅を奪う。選択ファイルの名前長次第なので「たまに」だった。
+- **決定**: 情報行ラベルが「自分の幅」を主張しないよう横 `QSizePolicy.Policy.Ignored` にし、表示は
+  `QFontMetrics.elidedText(ElideRight)` で現在幅に右省略する (resizeEvent で再省略、フル文字列は
+  `_info_full` に保持、フルパスは従来どおり tooltip)。プレビュー最小幅が 993→70px に低下し、
+  3 カラム 1400px で長い名前でも inbox=300 と意図比率に復帰することを確認 (`tests/test_pane_layout.py`)。
 
 ---
 

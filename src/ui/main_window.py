@@ -929,6 +929,29 @@ class MainWindow(QMainWindow):
         # プレビュー表示時は左右ペインが狭くなるので Name 列のみに絞る
         self.inbox_pane.set_compact(self._preview_visible)
         self.case_pane.set_compact(self._preview_visible)
+        # 更新列の出し入れを INBOX / 参照フォルダで共通基準に揃える。setSizes 直後は
+        # まだ table の geometry が確定していない (Qt のレイアウトパスがこの後) ため、
+        # 1 tick 遅らせて実 viewport で同期する。
+        QTimer.singleShot(0, self._sync_responsive_columns)
+
+    def _sync_responsive_columns(self) -> None:
+        """INBOX と参照フォルダの更新列の出し入れ判定を共通基準で揃える。
+
+        両テーブルの実 viewport 幅は数 px ずれる (左カラム/枠/スクロールバーの
+        誤差)。各ペインが自前 viewport で 30px 閾値を判定すると、その差が閾値を
+        またいだ瞬間に「片方だけ更新列が消えて Name 幅が半々にならない」現象に
+        なる (F4 半幅時 / Win で参照フォルダにファイルが多い時に出やすい)。
+        小さい方の幅を共有基準にして両ペインへ渡し、判定を必ず一致させる。
+        """
+        if not (hasattr(self, "inbox_pane") and hasattr(self, "case_pane")):
+            return
+        iw = self.inbox_pane.table.viewport().width()
+        cw = self.case_pane.table.viewport().width()
+        shared = min(iw, cw)
+        # 表示前など幅が確定していない間は自前 viewport にフォールバックさせる。
+        shared = shared if shared > 0 else None
+        self.inbox_pane.set_shared_name_width(shared)
+        self.case_pane.set_shared_name_width(shared)
 
     def _on_about(self) -> None:
         AboutDialog(self).exec()
