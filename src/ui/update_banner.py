@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QUrl, Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
@@ -82,6 +83,18 @@ class UpdateBanner(QWidget):
         self._btn_dismiss.setMaximumWidth(20)
         self._btn_dismiss.clicked.connect(self.dismissClicked.emit)
         layout.addWidget(self._btn_dismiss)
+        # フォントを 9pt に「明示的に」固定する (16px のステータスバーに収めるため)。
+        # QSS の font-size:9pt (#updateBannerLabel/#updateBannerBtn) だけでは効かない:
+        # 起動時 apply_bitmap_font_strategy が全 widget を walk して w.font() を
+        # setFont し直す際、QSS の font-size は w.font() に反映されない (描画段だけ)
+        # ため、各 widget は継承した 12pt を「明示フォント」として焼き直され、QSS の
+        # 9pt を上書きしてしまう (= バナーが 12pt で縦に見切れる, ADR-37 の積み残し)。
+        # ここで各 widget の font を 9pt に明示設定しておけば walk が 9pt を保つ
+        # (point_size=None の walk は既存サイズを維持し strategy だけ付与するため)。
+        for _w in (self._label, self._btn_update, self._btn_dismiss):
+            _f = _w.font()
+            _f.setPointSize(9)
+            _w.setFont(_f)
         self.setVisible(False)
 
     def show_for(self, release: ReleaseInfo) -> None:
