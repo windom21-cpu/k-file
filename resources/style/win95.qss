@@ -182,23 +182,24 @@ QPushButton#fnKeyCell:disabled {
 QStatusBar {
     background-color: #C0C0C0;
     border-top: 1px solid #808080;
-    min-height: 16px;
-    max-height: 16px;
+    min-height: 20px;
+    max-height: 20px;
     font-size: 9pt;     /* 左の showMessage を 9pt に。右の path 表示は label 側で 9pt 指定 */
 }
 QStatusBar::item {
     border: none;
 }
 
-/* 自動アップデート通知バナー: 16px のステータスバーに収める。汎用 QPushButton の
-   22px 固定だと縦に見切れるので、バナー内ボタンだけ低背・薄パディングに上書き。 */
+/* 自動アップデート通知バナー: 20px のステータスバーに収める。汎用 QPushButton の
+   22px 固定だと縦に見切れるので、バナー内ボタンだけ低背・薄パディングに上書き。
+   高さは 18px (= 枠 1px*2 を引いた内寸 16px) で 9pt の字が縦に切れない余裕を確保。 */
 #updateBannerLabel {
     font-size: 9pt;
     padding: 0;
 }
 #updateBannerBtn {
-    min-height: 14px;
-    max-height: 14px;
+    min-height: 18px;
+    max-height: 18px;
     min-width: 0;
     padding: 0 6px;
     font-size: 9pt;
