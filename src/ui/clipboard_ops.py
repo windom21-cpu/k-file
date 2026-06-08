@@ -27,33 +27,28 @@ _DROPEFFECT_COPY = 1
 _DROPEFFECT_MOVE = 2
 
 
-def set_file_clipboard(paths: list[Path], cut: bool) -> None:
-    """ファイル群をクリップボードに載せる (Explorer 互換)。
+def build_file_mime(paths: list[Path], cut: bool) -> QMimeData:
+    """ファイル群を載せた QMimeData を作る (Explorer 互換)。
 
-    cut=True なら「切り取り」(貼り付けで移動)、False なら「コピー」。
+    クリップボードに依存しない純粋関数なのでユニットテストしやすい
+    (グローバル QClipboard を触ると offscreen Qt が終了時に segfault するため、
+     テストはこの mime レベルで検証する)。
     """
-    cb = QApplication.clipboard()
-    if cb is None or not paths:
-        return
     mime = QMimeData()
     mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
     effect = _DROPEFFECT_MOVE if cut else _DROPEFFECT_COPY
     mime.setData(
         _PREFERRED_DROP_EFFECT, QByteArray(effect.to_bytes(4, "little"))
     )
-    cb.setMimeData(mime)
+    return mime
 
 
-def read_file_clipboard() -> tuple[list[Path], bool] | None:
-    """クリップボードからファイル群を読む。
+def parse_file_mime(mime: QMimeData | None) -> tuple[list[Path], bool] | None:
+    """QMimeData からファイル群を取り出す。
 
     Returns: (paths, cut) — cut=True なら切り取り (貼り付けで移動)。
-    ファイルが載っていなければ None。
+    ファイルが載っていなければ None。クリップボード非依存。
     """
-    cb = QApplication.clipboard()
-    if cb is None:
-        return None
-    mime = cb.mimeData()
     if mime is None or not mime.hasUrls():
         return None
     paths: list[Path] = []
@@ -73,6 +68,29 @@ def read_file_clipboard() -> tuple[list[Path], bool] | None:
             # Explorer は cut で 2、copy で 1 (または 5 = COPY|LINK) を入れる。
             cut = bool(val & _DROPEFFECT_MOVE) and not (val & _DROPEFFECT_COPY)
     return paths, cut
+
+
+def set_file_clipboard(paths: list[Path], cut: bool) -> None:
+    """ファイル群をクリップボードに載せる (Explorer 互換)。
+
+    cut=True なら「切り取り」(貼り付けで移動)、False なら「コピー」。
+    """
+    cb = QApplication.clipboard()
+    if cb is None or not paths:
+        return
+    cb.setMimeData(build_file_mime(paths, cut))
+
+
+def read_file_clipboard() -> tuple[list[Path], bool] | None:
+    """クリップボードからファイル群を読む。
+
+    Returns: (paths, cut) — cut=True なら切り取り (貼り付けで移動)。
+    ファイルが載っていなければ None。
+    """
+    cb = QApplication.clipboard()
+    if cb is None:
+        return None
+    return parse_file_mime(cb.mimeData())
 
 
 def clipboard_has_files() -> bool:
