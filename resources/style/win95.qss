@@ -179,6 +179,16 @@ QPushButton#fnKeyCell:disabled {
 }
 
 /* ─── ステータスバー ────────────────────────────────────── */
+/* バー高 20px の不変条件 (ADR-37/40 を経て根治): 更新通知バナー
+ * (UpdateBanner, setFixedHeight) は固定高さの widget。QStatusBar は
+ * addPermanentWidget した子を内部レイアウトで上端から y≈3px に置く (中央
+ * 揃えではなく上寄せ固定offset)。したがって見切れない条件は
+ *     バー実高 (= この値 + border 1px) ≥ バナー高 + 3px(offset) + slack
+ * バナー 16px に対し バー 20px (実 21px) なら下端 y19 で 2px 余る (実測)。
+ * β.4〜β.10 で繰り返し見切れたのは、バナー/ボタン/font を弄ってもこの
+ * 「バー高 > バナー高 + offset」を満たさず、バナーとバーを同じ 20px に
+ * 揃えて相殺していたため。**バナーを縮めるのではなくバー側に余白を持たせる**
+ * のが根治。バナー高を変えるなら必ずこの不等式を満たすこと。 */
 QStatusBar {
     background-color: #C0C0C0;
     border-top: 1px solid #808080;
@@ -190,16 +200,17 @@ QStatusBar::item {
     border: none;
 }
 
-/* 自動アップデート通知バナー: 20px のステータスバーに収める。汎用 QPushButton の
-   22px 固定だと縦に見切れるので、バナー内ボタンだけ低背・薄パディングに上書き。
-   高さは 18px (= 枠 1px*2 を引いた内寸 16px) で 9pt の字が縦に切れない余裕を確保。 */
+/* 自動アップデート通知バナー (UpdateBanner は setFixedHeight(16))。汎用
+   QPushButton の 22px 固定だと縦に見切れるので、バナー内ボタンだけ低背・薄
+   パディングに上書き: 内寸 14px + 枠 1px*2 = 16px = バナー高ぴったり。9pt の字
+   (fm 高 ≒ 12px) は内寸 14px に収まる。バー 20px が上下マージン込みで収容する。 */
 #updateBannerLabel {
     font-size: 9pt;
     padding: 0;
 }
 #updateBannerBtn {
-    min-height: 18px;
-    max-height: 18px;
+    min-height: 14px;
+    max-height: 14px;
     min-width: 0;
     padding: 0 6px;
     font-size: 9pt;

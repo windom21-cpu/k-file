@@ -62,11 +62,12 @@ class UpdateBanner(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("updateBanner")
-        # ステータスバー (QSS で 20px 固定) に収める。これをしないと内部の
-        # QPushButton (汎用 QSS で 22px) で縦に見切れる。バー自体が 16px では
-        # 9pt の字 + Win95 のベベル枠が物理的に入りきらないため 20px に拡張
-        # (バナーボタンは #updateBannerBtn で 18px、ADR-37 の積み残し)。
-        self.setFixedHeight(20)
+        # バナー高 16px 固定。見切れ根治の本質は「バー高 > バナー高 + QStatusBar の
+        # 上寄せ offset(≈3px)」を満たすこと (win95.qss の QStatusBar=20px 参照)。
+        # バナーとバーを同じ 20px に揃えると offset 分だけ下端がはみ出し、β.4〜β.10
+        # の見切れが再発する。バナーは 16px のままにし、余白はバー側(20px)が持つ。
+        # 内部ボタンは #updateBannerBtn で内寸 14px(+枠2px=16px) にして 9pt の字を収める。
+        self.setFixedHeight(16)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(3)
