@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core import file_ops
+from src.ui import clipboard_ops
 from src.infra.folder_shortcut import create_folder_shortcut, resolve_shortcut
 
 from src.core.folder_scanner import (
@@ -441,6 +442,9 @@ class CasePane(QWidget):
     # ステータスバー通知 (サブフォルダ追加/ショートカット作成等)
     actionStatus = Signal(str)
     fileSelected = Signal(str)                   # 選択ファイルのパス (プレビュー用)
+    # Ctrl+V / 右クリック「貼り付け」: 貼り付け先フォルダのパスを送る
+    # (空文字 = 貼り付け先が特定できない)。実コピー/移動は MainWindow が担当。
+    pasteRequested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -645,6 +649,16 @@ class CasePane(QWidget):
         sc_enter_kp = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
         sc_enter_kp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_enter_kp.activated.connect(self._activate_current_row)
+        # Ctrl+C / Ctrl+X / Ctrl+V: Explorer 流のファイル コピー / 切り取り / 貼り付け
+        sc_copy = QShortcut(QKeySequence.StandardKey.Copy, self.table)
+        sc_copy.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_copy.activated.connect(lambda: self.copy_selected(cut=False))
+        sc_cut = QShortcut(QKeySequence.StandardKey.Cut, self.table)
+        sc_cut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_cut.activated.connect(lambda: self.copy_selected(cut=True))
+        sc_paste = QShortcut(QKeySequence.StandardKey.Paste, self.table)
+        sc_paste.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_paste.activated.connect(self._request_paste)
         self.table.itemSelectionChanged.connect(self._on_table_selection)
         # ヘッダー右クリック (サイズ列のみ) → KB/MB 切替メニュー
         # 左クリックはソートに専念させる (役割が違うので分離 — ユーザー要望)
@@ -1243,6 +1257,10 @@ class CasePane(QWidget):
         row = self.table.indexAt(pos).row()
         item = self.table.item(row, 0) if row >= 0 else None
         if not isinstance(item, _NameItem) or item.is_parent:
+            # `..` 行 / 余白の右クリック: 貼り付けのみ (表示中フォルダへ)
+            menu = QMenu(self)
+            self._add_paste_action(menu)
+            menu.exec(self.table.viewport().mapToGlobal(pos))
             return
         menu = QMenu(self)
         if item.is_dir:
@@ -1261,8 +1279,16 @@ class CasePane(QWidget):
                     QUrl.fromLocalFile(str(item.path.parent))
                 )
             )
-        act_copy = menu.addAction("フルパスをコピー")
-        act_copy.triggered.connect(lambda: self._copy_to_clipboard(str(item.path)))
+        menu.addSeparator()
+        act_fcopy = menu.addAction("コピー")
+        act_fcopy.triggered.connect(lambda: self.copy_selected(cut=False))
+        act_fcut = menu.addAction("切り取り")
+        act_fcut.triggered.connect(lambda: self.copy_selected(cut=True))
+        self._add_paste_action(menu)
+        act_pathcopy = menu.addAction("フルパスをコピー")
+        act_pathcopy.triggered.connect(
+            lambda: self._copy_to_clipboard(str(item.path))
+        )
 
         # 「他事件へコピー / 移動」(B 案): multi-select 対応で全選択行を target に
         sel_paths = [p for p, _ in self.selected_entries()]
@@ -1271,6 +1297,15 @@ class CasePane(QWidget):
         self._add_cross_case_submenus(menu, sel_paths)
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _add_paste_action(self, menu: QMenu) -> None:
+        """「貼り付け」項目を menu に足す。クリップボードにファイルが無ければ
+        無効表示にして発見性だけ残す。"""
+        act_paste = menu.addAction("貼り付け")
+        act_paste.setEnabled(
+            clipboard_ops.clipboard_has_files() and self._cur_dir is not None
+        )
+        act_paste.triggered.connect(self._request_paste)
 
     def _add_cross_case_submenus(
         self, parent_menu: QMenu, src_paths: list[Path]
@@ -1341,6 +1376,29 @@ class CasePane(QWidget):
         cb = QApplication.clipboard()
         if cb is not None:
             cb.setText(text)
+
+    def current_dir(self) -> Path | None:
+        """いま中央テーブルに表示中のフォルダ (貼り付け先)。事件未選択なら None。"""
+        return self._cur_dir
+
+    def copy_selected(self, cut: bool) -> None:
+        """Ctrl+C / Ctrl+X / 右クリック: 選択行をクリップボードに載せる
+        (Explorer 互換)。cut=True で切り取り (貼り付けで移動)。`..` 行は除外。"""
+        paths = [p for p, _ in self.selected_entries()]
+        if not paths:
+            self.actionStatus.emit("コピーするファイルが選択されていません")
+            return
+        clipboard_ops.set_file_clipboard(paths, cut=cut)
+        verb = "切り取り" if cut else "コピー"
+        if len(paths) == 1:
+            self.actionStatus.emit(f"{paths[0].name} を{verb}")
+        else:
+            self.actionStatus.emit(f"{len(paths)} ファイルを{verb}")
+
+    def _request_paste(self) -> None:
+        """Ctrl+V / 右クリック「貼り付け」: 表示中フォルダを宛先に MainWindow へ。"""
+        target = self.current_dir()
+        self.pasteRequested.emit(str(target) if target is not None else "")
 
     # ───────── サブフォルダ管理 / 事件フォルダ管理 (+ / − / デスクトップ) ─────────
 

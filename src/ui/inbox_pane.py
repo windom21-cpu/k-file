@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from src.core.inbox_watcher import InboxFile, InboxSource, InboxWatcher
 from src.infra.kfile_db import KFileDB
+from src.ui import clipboard_ops
 from src.ui.dnd import SRC_INBOX, make_drag_pixmap, make_kfile_mime_data
 from src.ui.pane_header import PaneHeader
 
@@ -134,6 +135,11 @@ class InboxPane(QWidget):
     # Inbox に並んだフォルダ行のダブルクリック / Enter → 事件タブとして開く
     # (M6a 汎用ファイラー化と整合。k-file 内完結でデスクトップの作業フォルダを扱える)
     openFolderRequested = Signal(str)
+    # ステータスバー通知 (コピー/切り取り等の操作フィードバック)
+    actionStatus = Signal(str)
+    # Ctrl+V / 右クリック「貼り付け」: 貼り付け先フォルダのパスを送る
+    # (空文字 = 貼り付け先が特定できない)。実コピー/移動は MainWindow が担当。
+    pasteRequested = Signal(str)
 
     def __init__(
         self,
@@ -216,6 +222,16 @@ class InboxPane(QWidget):
         sc_open_kp = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
         sc_open_kp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_open_kp.activated.connect(self._open_selected_with_default_app)
+        # Ctrl+C / Ctrl+X / Ctrl+V: Explorer 流のファイル コピー / 切り取り / 貼り付け
+        sc_copy = QShortcut(QKeySequence.StandardKey.Copy, self.table)
+        sc_copy.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_copy.activated.connect(lambda: self.copy_selected(cut=False))
+        sc_cut = QShortcut(QKeySequence.StandardKey.Cut, self.table)
+        sc_cut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_cut.activated.connect(lambda: self.copy_selected(cut=True))
+        sc_paste = QShortcut(QKeySequence.StandardKey.Paste, self.table)
+        sc_paste.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_paste.activated.connect(self._request_paste)
         # ヘッダー右クリック (サイズ列のみ) → KB/MB 切替メニュー
         hdr = self.table.horizontalHeader()
         hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -473,9 +489,16 @@ class InboxPane(QWidget):
             self._restore_selection_by_paths({p})
 
     def _show_file_menu(self, pos) -> None:
-        """Inbox ファイルの右クリックメニュー (無視/開く/コピー/Explorer)。"""
+        """Inbox ファイルの右クリックメニュー (コピー/切り取り/貼り付け/無視/開く)。
+
+        ファイルの無い余白を右クリックした時は「貼り付け」だけのメニューを出す。
+        """
         f = self._row_file(self.table.indexAt(pos).row())
         if f is None:
+            # 余白の右クリック: 貼り付けのみ (空一覧でも貼り付けられるように)
+            menu = QMenu(self)
+            self._add_paste_action(menu)
+            menu.exec(self.table.viewport().mapToGlobal(pos))
             return
         menu = QMenu(self)
         act_open = menu.addAction("既定アプリで開く")
@@ -488,8 +511,14 @@ class InboxPane(QWidget):
                 QUrl.fromLocalFile(str(f.path.parent))
             )
         )
-        act_copy = menu.addAction("フルパスをコピー")
-        act_copy.triggered.connect(
+        menu.addSeparator()
+        act_fcopy = menu.addAction("コピー")
+        act_fcopy.triggered.connect(lambda: self.copy_selected(cut=False))
+        act_fcut = menu.addAction("切り取り")
+        act_fcut.triggered.connect(lambda: self.copy_selected(cut=True))
+        self._add_paste_action(menu)
+        act_pathcopy = menu.addAction("フルパスをコピー")
+        act_pathcopy.triggered.connect(
             lambda: self._copy_to_clipboard(str(f.path))
         )
         menu.addSeparator()
@@ -500,6 +529,13 @@ class InboxPane(QWidget):
             act = menu.addAction("この一覧から無視")
             act.triggered.connect(lambda: self._set_ignored(f, True))
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _add_paste_action(self, menu: QMenu) -> None:
+        """「貼り付け」項目を menu に足す。クリップボードにファイルが無ければ
+        無効表示にして発見性だけ残す。"""
+        act_paste = menu.addAction("貼り付け")
+        act_paste.setEnabled(clipboard_ops.clipboard_has_files())
+        act_paste.triggered.connect(self._request_paste)
 
     def _open_selected_with_default_app(self, *_args) -> None:
         """Inbox ダブルクリック / Enter キー:
@@ -519,6 +555,53 @@ class InboxPane(QWidget):
         cb = QApplication.clipboard()
         if cb is not None:
             cb.setText(text)
+
+    def copy_selected(self, cut: bool) -> None:
+        """Ctrl+C / Ctrl+X / 右クリック: 選択ファイルをクリップボードに載せる
+        (Explorer 互換)。cut=True で切り取り (貼り付けで移動)。"""
+        files = self.selected_files()
+        if not files:
+            self.actionStatus.emit(
+                "コピーするファイルが選択されていません"
+            )
+            return
+        clipboard_ops.set_file_clipboard([f.path for f in files], cut=cut)
+        verb = "切り取り" if cut else "コピー"
+        if len(files) == 1:
+            self.actionStatus.emit(f"{files[0].name} を{verb}")
+        else:
+            self.actionStatus.emit(f"{len(files)} ファイルを{verb}")
+
+    def paste_target_dir(self) -> Path | None:
+        """貼り付け先フォルダを決める。
+
+        Inbox は scan/Desktop/作業 を束ねた仮想ビューなので、貼り付け先は
+        選択中のフィルタタブのソースフォルダ。「全て」タブの時は選択行の
+        ソース、選択が無ければソースが 1 つだけならそれ、複数なら None
+        (= 特定できない) を返す。
+        """
+        idx = self.filter_tabs.currentIndex()
+        tab = FILTER_TABS[idx] if 0 <= idx < len(FILTER_TABS) else "全て"
+        if tab != "全て":
+            for s in self._sources:
+                if s.label == tab and s.path.is_dir():
+                    return s.path
+            return None
+        # 「全て」: 選択行の出所 → そのソースフォルダ
+        f = self.selected_file()
+        if f is not None:
+            for s in self._sources:
+                if s.label == f.source and s.path.is_dir():
+                    return s.path
+        valid = [s for s in self._sources if s.path.is_dir()]
+        if len(valid) == 1:
+            return valid[0].path
+        return None
+
+    def _request_paste(self) -> None:
+        """Ctrl+V / 右クリック「貼り付け」: 貼り付け先を算出して MainWindow へ。"""
+        target = self.paste_target_dir()
+        self.pasteRequested.emit(str(target) if target is not None else "")
 
     def _show_header_menu(self, pos) -> None:
         """サイズ列ヘッダー右クリック → KB/MB 切替メニュー (他列は無反応)。"""

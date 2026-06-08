@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from src.core import file_ops, undo_ops
 from src.core.case_repo import CaseRepo
+from src.ui import clipboard_ops
 from src.infra.kfile_db import KFileDB
 from src.infra.recycle_bin import open_recycle_bin
 from src.ui.about_dialog import AboutDialog
@@ -310,6 +311,14 @@ class MainWindow(QMainWindow):
         # Del / − ボタン: 中央 = case 削除 / Inbox = inbox 削除 (経路で履歴の文脈分け)
         self.case_pane.deleteRequested.connect(self._on_case_delete)
         self.inbox_pane.deleteRequested.connect(self._on_inbox_delete)
+        # Ctrl+V / 右クリック「貼り付け」: クリップボードのファイルを表示中
+        # フォルダ (case) / ソースフォルダ (inbox) へコピー or 移動 (Explorer 互換)
+        self.case_pane.pasteRequested.connect(self._on_paste)
+        self.inbox_pane.pasteRequested.connect(self._on_paste)
+        # Inbox のコピー/切り取り操作フィードバックをステータスバーへ
+        self.inbox_pane.actionStatus.connect(
+            lambda msg: self.statusBar().showMessage(msg, 4000)
+        )
         # 事件タブの追加/閉鎖を open_tabs に永続化 (セッション復元用)
         self.case_pane.casePathsChanged.connect(self._save_open_tabs)
         # Inbox 件数をステータスバーに反映
@@ -1153,6 +1162,93 @@ class MainWindow(QMainWindow):
         self._batch_inject(
             [Path(p) for p in src_paths], target, rel, suffix=" (D&D)",
         )
+
+    def _on_paste(self, target_dir_str: str) -> None:
+        """Ctrl+V / 右クリック「貼り付け」: クリップボードのファイル群を
+        target_dir へコピー or 移動する (Explorer 互換)。
+
+        切り取り (cut) なら移動 = file_ops.move、コピーなら file_ops.copy。
+        衝突は自動連番、履歴記録で Ctrl+Z 可能。切り取り → 貼り付けは一度きり
+        にするため成功後にクリップボードを空にする (Explorer と同じ)。
+        """
+        if not target_dir_str:
+            self.statusBar().showMessage(
+                "貼り付け先のフォルダが特定できません "
+                "(Inbox は scan/Desktop/作業 のタブを選んでください)",
+                5000,
+            )
+            return
+        data = clipboard_ops.read_file_clipboard()
+        if data is None:
+            self.statusBar().showMessage(
+                "クリップボードに貼り付けるファイルがありません", 3000
+            )
+            return
+        src_paths, cut = data
+        target_dir = Path(target_dir_str)
+        # 移動はファイルを unlink するので、PDF プレビューのファイルロックを先に解放
+        self.preview_pane.clear()
+        op = "move" if cut else "copy"
+        op_label = "移動" if cut else "コピー"
+        op_fn = file_ops.move if cut else file_ops.copy
+        code, _ = self.case_pane.current_case()
+        category = target_dir.name
+        ok_n = 0
+        collided_n = 0
+        skipped_n = 0
+        fails: list[str] = []
+        last_label = ""
+        for src in src_paths:
+            if not src.exists():
+                fails.append(f"{src.name}: 元ファイルが消えています")
+                continue
+            # 切り取り → 同じフォルダに貼り付けは無意味 (Explorer も無反応)
+            if cut and src.parent == target_dir:
+                skipped_n += 1
+                continue
+            result = op_fn(src, target_dir)
+            if not result.ok:
+                fails.append(f"{src.name}: {result.error}")
+                continue
+            ok_n += 1
+            last_label = result.renamed_to or src.name
+            if result.collided:
+                collided_n += 1
+            self._record_history(
+                action=op,
+                src_path=str(result.src),
+                dst_path=str(result.dst) if result.dst else None,
+                case_code=code,
+                category=category,
+                renamed_to=result.renamed_to,
+                original_name=result.original_name,
+            )
+        # 切り取りは一度きり: 1 件でも移動できたらクリップボードを空にする
+        if cut and ok_n > 0:
+            clipboard_ops.clear_file_clipboard()
+        self.inbox_pane.refresh()
+        self.case_pane.refresh_current_view()
+
+        if ok_n == 1 and not fails:
+            collide = "  衝突を回避" if collided_n else ""
+            self.statusBar().showMessage(
+                f"{last_label} を {category}{collide} に{op_label}", 4000
+            )
+        elif ok_n >= 1:
+            msg = f"{ok_n} ファイルを {category} に{op_label}"
+            if collided_n:
+                msg += f" (衝突回避 {collided_n} 件)"
+            if fails:
+                msg += f" / 失敗 {len(fails)} 件"
+            self.statusBar().showMessage(msg, 5000)
+        elif skipped_n and not fails:
+            self.statusBar().showMessage(
+                "同じフォルダには貼り付けできません (切り取り)", 3000
+            )
+        else:
+            self.statusBar().showMessage(
+                f"貼り付け失敗: {'; '.join(fails[:2])}", 6000
+            )
 
     def _do_cross_case_op(
         self,
