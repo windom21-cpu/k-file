@@ -42,6 +42,8 @@ from src.core.updater import (
     default_updates_dir,
     find_newer_release,
     install_dir_from_exe,
+    parse_sha256_text,
+    sha256_of_file,
     write_updater_script,
 )
 
@@ -155,6 +157,7 @@ class UpdateManager(QObject):
         self._worker: _CheckWorker | None = None
         self._dl_manager: QNetworkAccessManager | None = None
         self._dl_reply: QNetworkReply | None = None
+        self._sha_reply: QNetworkReply | None = None
         self._progress: QProgressDialog | None = None
         self._dl_path: Path | None = None
 
@@ -282,11 +285,74 @@ class UpdateManager(QObject):
                     f"アップデートのダウンロードに失敗しました:\n{reply.errorString()}",
                 )
                 return
-            # 成功: ファイルに保存
+            # 成功: ファイルに保存 → SHA256 照合 → 適用
             data = bytes(reply.readAll())
             assert self._dl_path is not None
             self._dl_path.write_bytes(data)
-            self._on_download_complete(self._dl_path)
+            self._verify_checksum(self._dl_path)
+        finally:
+            reply.deleteLater()
+
+    # ───── SHA256 照合 (通信破損への保険) ─────
+
+    def _verify_checksum(self, zip_path: Path) -> None:
+        """zip の SHA256 を Release の `.sha256` サイドカーと照合してから適用へ進む。
+
+        主たる信頼の根は GitHub 2FA + TLS で、SHA256 は通信破損への保険。よって:
+          - サイドカーが無い (旧 Release) / DL できない → 保険なしで続行
+          - ハッシュ不一致 → 破損/改ざんの可能性として適用を中止 (fail-closed)
+        """
+        rel = self._release
+        if rel is None or not rel.sha256_url or self._dl_manager is None:
+            self._on_download_complete(zip_path)
+            return
+        req = QNetworkRequest(QUrl(rel.sha256_url))
+        req.setHeader(
+            QNetworkRequest.KnownHeaders.UserAgentHeader,
+            f"k-file-updater/{self._local_version}",
+        )
+        req.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+        )
+        self._sha_reply = self._dl_manager.get(req)
+        self._sha_reply.finished.connect(
+            lambda zp=zip_path: self._on_sha_finished(zp)
+        )
+
+    def _on_sha_finished(self, zip_path: Path) -> None:
+        reply = self._sha_reply
+        self._sha_reply = None
+        if reply is None:
+            return
+        try:
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                # 照合ファイルを取れなかった → 保険なしで続行 (TLS は通っている)
+                self._on_download_complete(zip_path)
+                return
+            expected = parse_sha256_text(
+                bytes(reply.readAll()).decode("ascii", "replace")
+            )
+            if expected is None:
+                self._on_download_complete(zip_path)
+                return
+            if sha256_of_file(zip_path).lower() != expected.lower():
+                QMessageBox.critical(
+                    self._main_window,
+                    "整合性エラー",
+                    (
+                        "ダウンロードしたアップデートが壊れているか、\n"
+                        "改ざんされている可能性があります (SHA256 不一致)。\n\n"
+                        "安全のため適用を中止しました。\n"
+                        "ネットワークを確認のうえ、次回起動時に再度お試しください。"
+                    ),
+                )
+                try:
+                    zip_path.unlink()
+                except OSError:
+                    pass
+                return
+            self._on_download_complete(zip_path)
         finally:
             reply.deleteLater()
 

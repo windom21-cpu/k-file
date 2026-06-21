@@ -76,17 +76,39 @@ jobs:
       - name: Build (--onedir)
         run: pyinstaller --noconfirm k-file.spec
 
-      - name: Pack distribution folder
-        # dist/k-file/ フォルダごと zip 化 (展開先で k-file.exe を実行)
+      - name: Pack distribution folder (+ SHA256)
+        # dist/k-file/ フォルダごと zip 化 (展開先で k-file.exe を実行) し、
+        # 自動更新の整合性検証用に SHA256 サイドカー (.sha256) を sha256sum 形式で出力。
+        # アプリ側 (update_banner._verify_checksum) が展開前にこれと照合する。
         run: |
           Compress-Archive -Path dist/k-file/* -DestinationPath dist/k-file-windows.zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 dist/k-file-windows.zip).Hash.ToLower()
+          "$hash  k-file-windows.zip" | Out-File -FilePath dist/k-file-windows.zip.sha256 -Encoding ascii -NoNewline
+        shell: pwsh
+
+      - name: Install Inno Setup
+        # ユーザー領域インストーラ (k-file-setup.exe) のビルドに使う。
+        run: choco install innosetup --no-progress -y
+        shell: pwsh
+
+      - name: Build installer (k-file-setup.exe)
+        # VERSION を src/__version__.py から読み取り /D で渡す。出力は dist/k-file-setup.exe。
+        run: |
+          # 行頭アンカー必須: docstring 内の例 (  例: ... VERSION = "..." ) も
+          # 拾ってしまうため、実際の代入行 (行頭 VERSION) だけにマッチさせる。
+          $ver = (Select-String -Path src/__version__.py -Pattern '^VERSION = "(.*)"').Matches[0].Groups[1].Value
+          Write-Host "Building installer for version $ver"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver installer\k-file.iss
         shell: pwsh
 
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v4
         with:
           name: k-file-windows
-          path: dist/k-file-windows.zip
+          path: |
+            dist/k-file-windows.zip
+            dist/k-file-windows.zip.sha256
+            dist/k-file-setup.exe
           if-no-files-found: error
           retention-days: 90
 
@@ -94,5 +116,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/k-file-windows.zip
+          files: |
+            dist/k-file-windows.zip
+            dist/k-file-windows.zip.sha256
+            dist/k-file-setup.exe
           prerelease: ${{ contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}

@@ -17,6 +17,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QToolTip
 
@@ -90,6 +91,14 @@ def parse_initial_paths(argv: list[str]) -> list[Path]:
 
 
 def main() -> int:
+    # High-DPI: 拡大率 (125%/150% 等) を OS 設定そのままに追従させる (PassThrough)。
+    # 100% 表示では scale factor=1.0 で一切影響しない (= 通常運用には無影響)。
+    # ビットマップフォント + 固定 px 前提のため、拡大時の最終的な見え方 (にじみ /
+    # レイアウト溢れ) は Win 実機で要確認 (β.12 課題)。崩れたら Round 等へ調整する。
+    # ※ この静的設定は QApplication 生成より前に呼ぶ必要がある。
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName("k-file")
     app.setOrganizationName("k-file")

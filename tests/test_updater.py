@@ -18,7 +18,10 @@ from src.core.updater import (
     ReleaseInfo,
     fetch_latest_release,
     find_newer_release,
+    parse_sha256_text,
+    pick_sha256_asset,
     pick_zip_asset,
+    sha256_of_file,
     write_updater_script,
 )
 
@@ -211,3 +214,94 @@ def test_write_updater_script_quotes_paths_with_apostrophe(tmp_path: Path):
     script = write_updater_script(install_dir, zip_path)
     content = script.read_text(encoding="utf-8-sig")
     assert "o''brien-k-file" in content
+
+
+# ───────── SHA256 整合性検証 (通信破損への保険) ─────────
+
+
+def test_pick_sha256_asset_exact_name():
+    assets = [
+        {"name": ASSET_NAME, "browser_download_url": "https://x/zip"},
+        {
+            "name": ASSET_NAME + ".sha256",
+            "browser_download_url": "https://x/sha",
+        },
+    ]
+    a = pick_sha256_asset(assets, ASSET_NAME)
+    assert a is not None
+    assert a["name"] == ASSET_NAME + ".sha256"
+
+
+def test_pick_sha256_asset_fallback_any_sha256():
+    assets = [
+        {"name": "other.zip.sha256", "browser_download_url": "https://x/sha"},
+    ]
+    a = pick_sha256_asset(assets, ASSET_NAME)
+    assert a is not None
+    assert a["name"].endswith(".sha256")
+
+
+def test_pick_sha256_asset_none_when_absent():
+    assets = [{"name": ASSET_NAME, "browser_download_url": "https://x/zip"}]
+    assert pick_sha256_asset(assets, ASSET_NAME) is None
+    assert pick_sha256_asset([], ASSET_NAME) is None
+    assert pick_sha256_asset(None, ASSET_NAME) is None  # type: ignore[arg-type]
+
+
+def test_sha256_of_file_known_value(tmp_path: Path):
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"abc")
+    # 既知の SHA256("abc")
+    assert sha256_of_file(f) == (
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    )
+
+
+def test_parse_sha256_text_plain():
+    h = "a" * 64
+    assert parse_sha256_text(h) == h
+
+
+def test_parse_sha256_text_sha256sum_format():
+    h = "b" * 64
+    assert parse_sha256_text(f"{h}  k-file-windows.zip\n") == h
+
+
+def test_parse_sha256_text_uppercase_and_prefix():
+    h = "C" * 64
+    assert parse_sha256_text(f"SHA256(k-file-windows.zip)= {h}") == h.lower()
+
+
+def test_parse_sha256_text_none_when_missing():
+    assert parse_sha256_text("") is None
+    assert parse_sha256_text("no hash here") is None
+    assert parse_sha256_text("deadbeef") is None  # 64 桁未満
+
+
+def _fake_release_with_sha(tag, asset_name=ASSET_NAME):
+    rel = _fake_release(tag)
+    rel["assets"].append(
+        {
+            "name": asset_name + ".sha256",
+            "browser_download_url": f"https://example.com/{asset_name}.sha256",
+            "size": 70,
+        }
+    )
+    return rel
+
+
+def test_fetch_latest_release_populates_sha256_url():
+    payload = [_fake_release_with_sha("v0.1.0-beta.12")]
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+        rel = fetch_latest_release()
+    assert rel is not None
+    assert rel.sha256_url == f"https://example.com/{ASSET_NAME}.sha256"
+
+
+def test_fetch_latest_release_sha256_url_none_when_absent():
+    # サイドカーが無い旧 Release では None (= 照合スキップで後方互換)
+    payload = [_fake_release("v0.1.0-beta.1")]
+    with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
+        rel = fetch_latest_release()
+    assert rel is not None
+    assert rel.sha256_url is None

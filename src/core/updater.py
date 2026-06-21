@@ -17,8 +17,10 @@ UI 側 (status bar / 進捗 / 確認) と DL 進捗ストリーミングは `ui/
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -36,6 +38,8 @@ RELEASES_API_URL = (
 
 # CI が upload する asset 名 (.github/workflows/build.yml と整合)
 ASSET_NAME = "k-file-windows.zip"
+# zip の SHA256 を載せたサイドカー asset の拡張子 (= "<zip 名>.sha256")
+SHA256_ASSET_SUFFIX = ".sha256"
 
 
 @dataclass
@@ -48,6 +52,7 @@ class ReleaseInfo:
     download_url: str        # zip の direct URL
     asset_name: str
     asset_size: int          # bytes
+    sha256_url: str | None = None   # ".sha256" サイドカー asset の URL (無ければ None)
 
 
 def fetch_latest_release(
@@ -90,9 +95,11 @@ def fetch_latest_release(
         if not tag:
             continue
         version = tag.lstrip("v").lstrip("V")
-        asset = pick_zip_asset(release.get("assets") or [])
+        assets = release.get("assets") or []
+        asset = pick_zip_asset(assets)
         if asset is None:
             continue
+        sha = pick_sha256_asset(assets, asset["name"])
         return ReleaseInfo(
             tag=tag,
             version=version,
@@ -100,6 +107,7 @@ def fetch_latest_release(
             download_url=asset["browser_download_url"],
             asset_name=asset["name"],
             asset_size=int(asset.get("size", 0)),
+            sha256_url=(sha["browser_download_url"] if sha else None),
         )
     return None
 
@@ -124,6 +132,55 @@ def pick_zip_asset(assets: list[dict]) -> dict | None:
         ):
             return a
     return None
+
+
+def pick_sha256_asset(assets: list[dict], zip_name: str) -> dict | None:
+    """Release の assets 配列から zip の SHA256 サイドカーを 1 件選ぶ。
+
+    優先順位:
+      1. `<zip_name>.sha256` と完全一致 (CI が upload する名前)
+      2. `.sha256` 拡張子の最初の asset (fallback)
+    サイドカーが無い (= 旧 Release) 場合は None。照合は「あれば行う」保険扱い。
+    """
+    if not isinstance(assets, list):
+        return None
+    want = zip_name + SHA256_ASSET_SUFFIX
+    for a in assets:
+        if a.get("name") == want and a.get("browser_download_url"):
+            return a
+    for a in assets:
+        if (
+            isinstance(a.get("name"), str)
+            and a["name"].lower().endswith(SHA256_ASSET_SUFFIX)
+            and a.get("browser_download_url")
+        ):
+            return a
+    return None
+
+
+def sha256_of_file(path: Path, chunk_size: int = 1 << 20) -> str:
+    """ファイルの SHA256 を小文字 hex で返す (1MB ずつ読むのでメモリ安全)。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk_size), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def parse_sha256_text(text: str) -> str | None:
+    """`.sha256` ファイルの中身から 64 桁 hex を 1 つ取り出して小文字で返す。
+
+    許容する書式 (どれでも先頭の 64-hex を拾う):
+      - `<hex>`
+      - `<hex>  k-file-windows.zip`   (sha256sum 形式)
+      - `SHA256(k-file-windows.zip)= <hex>`
+      - `sha256:<hex>`
+    見つからなければ None。
+    """
+    if not text:
+        return None
+    m = re.search(r"\b([0-9a-fA-F]{64})\b", text)
+    return m.group(1).lower() if m else None
 
 
 def find_newer_release(
