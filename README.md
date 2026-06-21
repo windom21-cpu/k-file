@@ -14,3 +14,7 @@ python -m src.main
 
 ## ビルド (Win)
 GitHub Actions が `windows-latest` runner で PyInstaller を回す。詳細は `docs/CI-CD.md`。
+
+## 配布
+GitHub Releases で配布。初回はインストーラ (`k-file-setup.exe` / Inno Setup、ユーザー領域・管理者権限不要)、
+以降は **起動時の自動アップデート** (新版検知 → 1 クリック DL → SHA256 照合 → 再起動で反映)。
