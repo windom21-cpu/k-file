@@ -319,6 +319,46 @@ def write_updater_script(
     return script_path
 
 
+def write_relaunch_script(
+    install_dir: Path,
+    new_exe_name: str = "k-file.exe",
+    script_path: Path | None = None,
+) -> Path:
+    """k-file を「終了を待って起動し直す」だけの PowerShell スクリプトを書き出す。
+
+    表示倍率 (QT_SCALE_FACTOR) のように QApplication 生成前でしか反映できない設定を
+    変えた後の自動再起動用。zip 展開を伴わない点だけが write_updater_script と違う。
+
+    単一インスタンス IPC (QLocalServer, ADR-20) と競合しないよう、**旧プロセスの消滅を
+    待ってから** 起動する。待たずに起動すると新プロセスが生き残っている旧 primary に
+    パスを送って自分は終了し、旧 primary も直後に閉じてウインドウが 1 つも残らない。
+    write_updater_script と同じ Get-Process ポーリングで回避する。
+
+    起動側は update_banner と同様 CREATE_NO_WINDOW (隠しコンソール) で呼ぶこと。
+    """
+    install_dir = install_dir.resolve()
+    new_exe = install_dir / new_exe_name
+    if script_path is None:
+        script_path = default_updates_dir() / "relaunch.ps1"
+    # Get-Process は .exe を除いた名前を取る (k-file.exe → "k-file")
+    proc_base = new_exe_name[:-4] if new_exe_name.lower().endswith(".exe") else new_exe_name
+    q_exe = _ps_quote(str(new_exe))
+    q_proc = _ps_quote(proc_base)
+    lines = [
+        "$ErrorActionPreference = 'Continue'",
+        f"$exe = {q_exe}",
+        # 旧 k-file が終了するまで最大 30 秒待つ (IPC ロック解放待ち)
+        "$deadline = (Get-Date).AddSeconds(30)",
+        f"while ((Get-Process -Name {q_proc} -ErrorAction SilentlyContinue) "
+        "-and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }",
+        "Start-Process -FilePath $exe",
+    ]
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    # UTF-8 BOM 付き (Windows PowerShell 5.1 が非 ASCII パスを正しく読むため)
+    script_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig")
+    return script_path
+
+
 def install_dir_from_exe() -> Path | None:
     """PyInstaller --onedir で立ち上がった時の install_dir (= k-file.exe の親)。
 

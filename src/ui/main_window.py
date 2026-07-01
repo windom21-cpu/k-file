@@ -9,17 +9,27 @@
 """
 from __future__ import annotations
 
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QGuiApplication,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenuBar,
+    QMessageBox,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -28,6 +38,16 @@ from PySide6.QtWidgets import (
 
 from src.core import file_ops, undo_ops
 from src.core.case_repo import CaseRepo
+from src.core.ui_scale import (
+    DEFAULT_SCALE,
+    SCALE_STEPS,
+    SETTING_KEY as UI_SCALE_KEY,
+    clamp_scale,
+    parse_scale,
+    step_down,
+    step_up,
+)
+from src.core.updater import install_dir_from_exe, write_relaunch_script
 from src.ui import clipboard_ops
 from src.infra.kfile_db import KFileDB
 from src.infra.recycle_bin import open_recycle_bin
@@ -123,6 +143,7 @@ class MainWindow(QMainWindow):
         # 構築 = case_pane/command_strip 等の apply に反映される)。menu は _build_menus
         # で構築済なので、ここでチェック状態も合わせられる。
         self._apply_saved_font_mode()
+        self._apply_saved_zoom()
         # 設定から Inbox 監視先を復元 (未設定なら InboxPane の dev 既定が使われる)
         configured_sources = load_inbox_sources(self.db)
         self.inbox_pane = InboxPane(self.db, sources=configured_sources)
@@ -402,6 +423,36 @@ class MainWindow(QMainWindow):
             m_font.addAction(act)
             self._font_mode_actions[mode] = act
         self._font_mode_actions[FONT_MODE_BITMAP].setChecked(True)  # 既定 (db で上書き)
+
+        # 表示倍率 (ウインドウ・文字・全 widget を一律スケール)。QT_SCALE_FACTOR を
+        # 使うため反映は再起動で行う (main.py `_apply_ui_scale` / `_prompt_zoom_restart`)。
+        m_view.addSeparator()
+        m_zoom = m_view.addMenu("表示倍率(&Z)")
+        act_zoom_in = QAction("拡大", self)
+        act_zoom_in.setShortcuts(
+            [QKeySequence("Ctrl++"), QKeySequence("Ctrl+=")]
+        )
+        act_zoom_in.triggered.connect(lambda: self._on_zoom_step(+1))
+        m_zoom.addAction(act_zoom_in)
+        act_zoom_out = QAction("縮小", self)
+        act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
+        act_zoom_out.triggered.connect(lambda: self._on_zoom_step(-1))
+        m_zoom.addAction(act_zoom_out)
+        act_zoom_reset = QAction("標準 (100%)", self)
+        act_zoom_reset.setShortcut(QKeySequence("Ctrl+0"))
+        act_zoom_reset.triggered.connect(lambda: self._on_zoom_selected(DEFAULT_SCALE))
+        m_zoom.addAction(act_zoom_reset)
+        m_zoom.addSeparator()
+        self._zoom_group = QActionGroup(self)
+        self._zoom_group.setExclusive(True)
+        self._zoom_actions: dict[int, QAction] = {}
+        for pct in SCALE_STEPS:
+            act = QAction(f"{pct}%", self)
+            act.setCheckable(True)
+            self._zoom_group.addAction(act)
+            act.triggered.connect(lambda _c, p=pct: self._on_zoom_selected(p))
+            m_zoom.addAction(act)
+            self._zoom_actions[pct] = act
         # F2 は M3 で「選択中ファイルをリネーム」に充てる予定 (Windows 標準)
 
         # ツールメニュー: 設定 (Inbox 監視パス・ksystemz.db パス等) の入口。
@@ -441,6 +492,102 @@ class MainWindow(QMainWindow):
         reapply_font_render_mode()   # 開いている全 top-level widget + tooltip に再付与
         label = FONT_MODE_LABELS.get(mode, mode)
         self.statusBar().showMessage(f"文字の描画: {label}", 2000)
+
+    # ───────── 表示倍率 (UI scale) ─────────
+
+    def _apply_saved_zoom(self) -> None:
+        """kfile.db の表示倍率をメニューのチェック状態に反映する。
+
+        実スケールは main.py が QApplication 生成前に QT_SCALE_FACTOR へ適用済。
+        ここでは「今この起動で有効な倍率」(= self._effective_zoom) にラジオを合わせ、
+        変更が現状と同じか差分かを後で判定できるようにするだけ。SCALE_STEPS 外の
+        値 (手書き db 等) はどのラジオもチェックしない。
+        """
+        pct = parse_scale(self.db.get_setting(UI_SCALE_KEY))
+        self._effective_zoom = pct
+        act = self._zoom_actions.get(pct)
+        if act is not None:
+            act.setChecked(True)
+
+    def _on_zoom_step(self, direction: int) -> None:
+        """Ctrl+± / メニューの拡大・縮小: 現在の設定倍率から 1 段動かす。"""
+        cur = parse_scale(self.db.get_setting(UI_SCALE_KEY))
+        nxt = step_up(cur) if direction > 0 else step_down(cur)
+        if nxt != cur:
+            self._on_zoom_selected(nxt)
+
+    def _on_zoom_selected(self, pct: int) -> None:
+        """表示倍率を選んだ時: 永続化 → 現状と違えば再起動を促す。"""
+        pct = clamp_scale(pct)
+        act = self._zoom_actions.get(pct)
+        if act is not None:
+            act.setChecked(True)
+        self.db.set_setting(UI_SCALE_KEY, str(pct))
+        if pct == getattr(self, "_effective_zoom", DEFAULT_SCALE):
+            # 既に有効な倍率と同じ = 反映済み。再起動不要。
+            self.statusBar().showMessage(f"表示倍率: {pct}%", 2000)
+            return
+        self._prompt_zoom_restart(pct)
+
+    def _prompt_zoom_restart(self, pct: int) -> None:
+        """倍率変更の反映に再起動が要る旨を伝え、承認されれば自動再起動する。"""
+        if install_dir_from_exe() is None:
+            # 開発実行 (.exe でない): 自動再起動しない。次回起動で反映。
+            QMessageBox.information(
+                self,
+                "表示倍率",
+                f"表示倍率を {pct}% に設定しました。\n"
+                f"開発実行のため、次回 k-file を起動したときに反映されます。",
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "表示倍率の変更",
+            f"表示倍率を {pct}% に変更します。\n"
+            f"反映には k-file の再起動が必要です。\n\n今すぐ再起動しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            if not self._relaunch_app():
+                QMessageBox.warning(
+                    self,
+                    "再起動に失敗",
+                    "自動再起動に失敗しました。\n"
+                    "k-file を一度終了して起動し直すと反映されます。",
+                )
+        else:
+            self.statusBar().showMessage(
+                f"表示倍率 {pct}% は次回起動時に反映されます", 4000
+            )
+
+    def _relaunch_app(self) -> bool:
+        """k-file を再起動する (配布 .exe のみ)。起動を仕掛けられたら True。
+
+        updater と同じ「旧プロセス消滅を待ってから起動」する PowerShell を隠しコンソール
+        で走らせ、自分は close() する (closeEvent がタブ/ウインドウサイズを保存 → 新版が復元)。
+        """
+        install_dir = install_dir_from_exe()
+        if install_dir is None:
+            return False
+        exe_name = Path(sys.executable).name
+        try:
+            script_path = write_relaunch_script(install_dir, new_exe_name=exe_name)
+            no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                [
+                    "powershell.exe", "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", str(script_path),
+                ],
+                cwd=tempfile.gettempdir(),
+                creationflags=(no_window if sys.platform == "win32" else 0),
+                close_fds=True,
+            )
+        except OSError:
+            return False
+        self.close()
+        return True
 
     def _on_strip_subfolder(self, view_id: int) -> None:
         """中央ストリップの数字ボタン: 選択中 → 投入、未選択 → 閲覧のみ。"""
@@ -903,6 +1050,14 @@ class MainWindow(QMainWindow):
             if w_str and h_str:
                 w, h = int(w_str), int(h_str)
                 if 400 <= w <= 10000 and 300 <= h <= 10000:
+                    # 表示倍率を上げた直後などに、保存済みサイズ (論理 px) が画面
+                    # (論理 px) をはみ出さないようクランプする。availableGeometry も
+                    # ウインドウ幾何も Qt6 では論理 px なので同じ土俵で比較できる。
+                    screen = self.screen() or QGuiApplication.primaryScreen()
+                    if screen is not None:
+                        avail = screen.availableGeometry()
+                        w = min(w, avail.width())
+                        h = min(h, avail.height())
                     self.resize(w, h)
         except ValueError:
             pass

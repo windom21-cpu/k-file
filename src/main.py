@@ -13,6 +13,7 @@ PyInstaller --onefile で配布されたときは sys._MEIPASS から resources 
 from __future__ import annotations
 
 import datetime
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -21,7 +22,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QToolTip
 
-from src.infra.kfile_db import app_data_dir
+from src.core.ui_scale import (
+    DEFAULT_SCALE,
+    SETTING_KEY as UI_SCALE_KEY,
+    parse_scale,
+    scale_factor_str,
+)
+from src.infra.kfile_db import KFileDB, app_data_dir
 from src.ipc import IpcServer, try_send_to_primary
 from src.ui._font_strategy import apply_bitmap_font_strategy, tooltip_font
 from src.ui.main_window import MainWindow
@@ -90,7 +97,27 @@ def parse_initial_paths(argv: list[str]) -> list[Path]:
     return out
 
 
+def _apply_ui_scale() -> None:
+    """kfile.db の表示倍率を QT_SCALE_FACTOR に反映する (QApplication 生成前に呼ぶ)。
+
+    ユーザーが「表示 → 表示倍率」で選んだ倍率で、ウインドウ・文字・全 widget を
+    一律にスケールする。QT_SCALE_FACTOR は Qt が起動時に一度だけ読むため、倍率変更は
+    再起動で反映する (MainWindow が自動再起動する)。100% のときは環境変数を触らない
+    = OS 側スケール (ADR-45 PassThrough) に一切干渉しない。DB 読取失敗時も既定 100%。
+    """
+    try:
+        db = KFileDB()
+        percent = parse_scale(db.get_setting(UI_SCALE_KEY))
+        db.close()
+    except Exception:
+        percent = DEFAULT_SCALE
+    if percent != DEFAULT_SCALE:
+        os.environ["QT_SCALE_FACTOR"] = scale_factor_str(percent)
+
+
 def main() -> int:
+    # 表示倍率 (ユーザー設定) を QApplication 生成前に環境変数へ反映する。
+    _apply_ui_scale()
     # High-DPI: 拡大率 (125%/150% 等) を OS 設定そのままに追従させる (PassThrough)。
     # 100% 表示では scale factor=1.0 で一切影響しない (= 通常運用には無影響)。
     # ビットマップフォント + 固定 px 前提のため、拡大時の最終的な見え方 (にじみ /
