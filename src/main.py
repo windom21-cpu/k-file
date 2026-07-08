@@ -102,8 +102,13 @@ def _apply_ui_scale() -> None:
 
     ユーザーが「表示 → 表示倍率」で選んだ倍率で、ウインドウ・文字・全 widget を
     一律にスケールする。QT_SCALE_FACTOR は Qt が起動時に一度だけ読むため、倍率変更は
-    再起動で反映する (MainWindow が自動再起動する)。100% のときは環境変数を触らない
-    = OS 側スケール (ADR-45 PassThrough) に一切干渉しない。DB 読取失敗時も既定 100%。
+    再起動で反映する (MainWindow が自動再起動する)。100% のときは QT_SCALE_FACTOR を
+    未設定に戻す = OS 側スケール (ADR-45 PassThrough) に一切干渉しない。DB 読取失敗時も既定 100%。
+
+    ⚠ 自己再起動 (_relaunch_app) は現プロセスの環境を PowerShell → 新 exe と継承する。
+    150% で立てた QT_SCALE_FACTOR=1.5 がそのまま子へ流れるため、100% に戻して再起動しても
+    「触らない」だけでは継承値が残り 150% のまま起動してしまう。よって毎回まず pop で
+    継承値を捨て、100% 以外のときだけ改めてセットする。
     """
     try:
         db = KFileDB()
@@ -111,6 +116,8 @@ def _apply_ui_scale() -> None:
         db.close()
     except Exception:
         percent = DEFAULT_SCALE
+    # 継承した QT_SCALE_FACTOR (自己再起動時の親プロセス由来) を必ず一旦捨てる。
+    os.environ.pop("QT_SCALE_FACTOR", None)
     if percent != DEFAULT_SCALE:
         os.environ["QT_SCALE_FACTOR"] = scale_factor_str(percent)
 

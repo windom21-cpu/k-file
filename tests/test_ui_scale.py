@@ -146,3 +146,60 @@ def test_write_relaunch_script_no_zip_expand(tmp_path):
     write_relaunch_script(install, script_path=out)
     text = out.read_text(encoding="utf-8-sig")
     assert "Expand-Archive" not in text
+
+
+# ───────── _apply_ui_scale (QT_SCALE_FACTOR の env 反映) ─────────
+
+
+class _FakeDB:
+    """_apply_ui_scale テスト用: 指定した ui_scale_percent を返すだけの KFileDB スタブ。"""
+
+    def __init__(self, percent):
+        self._percent = percent
+
+    def get_setting(self, key):
+        return None if self._percent is None else str(self._percent)
+
+    def close(self):
+        pass
+
+
+def _run_apply_with_db(monkeypatch, percent):
+    import src.main as main_mod
+
+    monkeypatch.setattr(main_mod, "KFileDB", lambda: _FakeDB(percent))
+    main_mod._apply_ui_scale()
+
+
+def test_apply_ui_scale_sets_env_when_enlarged(monkeypatch):
+    monkeypatch.delenv("QT_SCALE_FACTOR", raising=False)
+    _run_apply_with_db(monkeypatch, 150)
+    import os
+
+    assert os.environ["QT_SCALE_FACTOR"] == "1.5"
+
+
+def test_apply_ui_scale_clears_inherited_env_at_100(monkeypatch):
+    # 150% 起動 → 100% に戻して再起動、を模す: 継承した QT_SCALE_FACTOR=1.5 が
+    # env に残っている状態で 100% を適用すると、env が消えていなければならない
+    # (消さないと子プロセスが 150% のまま起動してしまう — 回帰防止)。
+    monkeypatch.setenv("QT_SCALE_FACTOR", "1.5")
+    _run_apply_with_db(monkeypatch, 100)
+    import os
+
+    assert "QT_SCALE_FACTOR" not in os.environ
+
+
+def test_apply_ui_scale_clears_inherited_env_on_db_failure(monkeypatch):
+    # DB 読取失敗 → 既定 100% 扱い。この経路でも継承 env を残さないこと。
+    import src.main as main_mod
+
+    def _boom():
+        raise RuntimeError("db open failed")
+
+    monkeypatch.setenv("QT_SCALE_FACTOR", "1.75")
+    monkeypatch.setattr(main_mod, "KFileDB", _boom)
+    main_mod._apply_ui_scale()
+    import os
+
+    assert "QT_SCALE_FACTOR" not in os.environ
