@@ -19,6 +19,8 @@ a = Analysis(
     datas=[
         ('resources/style/win95.qss', 'resources/style'),
         ('resources/icons', 'resources/icons'),
+        # IPAゴシック (MS Gothic 欠落環境のフォールバック) + ライセンス全文
+        ('resources/fonts', 'resources/fonts'),
     ],
     hiddenimports=[
         # send2trash は file_ops 内で関数ローカル import (lazy) のため

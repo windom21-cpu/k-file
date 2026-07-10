@@ -31,6 +31,7 @@ from src.core.ui_scale import (
 from src.infra.kfile_db import KFileDB, app_data_dir
 from src.ipc import IpcServer, try_send_to_primary
 from src.ui._font_strategy import apply_bitmap_font_strategy, tooltip_font
+from src.ui.font_fallback import ensure_gothic_fallback
 from src.ui.main_window import MainWindow
 
 
@@ -139,6 +140,9 @@ def main() -> int:
     from src.__version__ import VERSION
     app.setApplicationVersion(VERSION)
     app.setStyle("Windows")  # Fusion / windowsvista を避けて Win95 寄りに固定
+    # MS Gothic が無い環境 (素の Mac 等) だけ同梱 IPAゴシックへ代替する。
+    # ある環境ではシステムフォント優先で何もしない。QSS 適用前に呼ぶ。
+    ensure_gothic_fallback(_base_path())
     app.setStyleSheet(_load_stylesheet())
     app.setWindowIcon(_app_icon())  # タスクバー / Alt+Tab / 自作タイトルバー用
 
