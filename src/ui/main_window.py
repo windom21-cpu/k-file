@@ -128,7 +128,12 @@ class MainWindow(QMainWindow):
         self.title_bar = TitleBar(self)
         root_layout.addWidget(self.title_bar)
 
-        self.menu_bar = QMenuBar()
+        # macOS では親なし QMenuBar が画面最上部のグローバルメニューバーへ移動して
+        # ウインドウ内から消える (Qt 既定)。しかも一度 native 扱いになると
+        # setNativeMenuBar(False) 後もレイアウトに乗らず非表示のままなので、
+        # 生成時に親を渡して最初から通常 widget として作る (Windows/Linux では無影響)。
+        self.menu_bar = QMenuBar(root)
+        self.menu_bar.setNativeMenuBar(False)
         self._build_menus(self.menu_bar)
         root_layout.addWidget(self.menu_bar)
 
