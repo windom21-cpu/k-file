@@ -168,6 +168,10 @@ class UpdateManager(QObject):
 
     def check_async(self) -> None:
         """別スレッドで `find_newer_release` を走らせる。完了時にバナー更新。"""
+        if sys.platform != "win32":
+            # 自動アップデートは Windows 専用 (asset = k-file-windows.zip +
+            # PowerShell updater)。Mac 版は当面手動 DL で更新 (docs/MAC.md)。
+            return
         if self._thread is not None:
             return   # すでに走っている
         self._thread = QThread(self)

@@ -3,6 +3,12 @@
 # 配布形態: --onedir (β/stable 共通) — K-SystemZ から繰り返し起動した時の
 # --onefile 展開コスト (3〜10 秒) を回避するため、2026-05-25 連携検討で
 # --onedir に切替。配布物は `dist/k-file/` フォルダごと (zip で頒布)。
+#
+# macOS (Apple Silicon): 同じ spec で BUNDLE を追加生成し `dist/k-file.app` を
+# 作る (CI の build-mac ジョブが zip 化)。icon は .ico が Win 専用のため
+# darwin では付けない (.icns 化は署名/公証と同じく後続フェーズ)。
+
+import sys
 
 block_cipher = None
 
@@ -46,7 +52,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='resources/icons/favicon.ico',
+    icon='resources/icons/favicon.ico' if sys.platform == 'win32' else None,
 )
 coll = COLLECT(
     exe,
@@ -58,3 +64,15 @@ coll = COLLECT(
     upx_exclude=[],
     name='k-file',           # → dist/k-file/ に展開される
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='k-file.app',
+        icon=None,
+        bundle_identifier='com.windom21.kfile',
+        info_plist={
+            # Retina で等倍のぼやけ描画にならないようにする
+            'NSHighResolutionCapable': True,
+        },
+    )

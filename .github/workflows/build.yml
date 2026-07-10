@@ -5,6 +5,11 @@ name: build
 #  - v* タグ: Release を作成し zip を assets に upload (β は prerelease)
 #  - 手動実行 (workflow_dispatch) も可
 #
+# macOS (2026-07-10 〜): build-mac ジョブで Apple Silicon (arm64) 向け
+# k-file.app を作り k-file-macos.zip として artifact / Release に upload。
+# Intel Mac は対象外 (ユーザー実機が M1 のため)。署名/公証は未実施 —
+# 初回起動は Gatekeeper 回避が必要 (docs/MAC.md 参照)。
+#
 # すべての push / PR / タグで、まず Linux で pytest (offscreen Qt) を実行し、
 # 緑の時だけ Windows で .exe をビルドする (build は needs: test)。これで壊れた
 # コミットが .exe 化され自動更新で配布される事故を防ぐ。
@@ -120,4 +125,48 @@ jobs:
             dist/k-file-windows.zip
             dist/k-file-windows.zip.sha256
             dist/k-file-setup.exe
+          prerelease: ${{ contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}
+
+  # macOS (Apple Silicon) ビルド。Windows ビルドと同じくテスト緑が条件。
+  build-mac:
+    needs: test
+    runs-on: macos-latest   # = arm64 (M1 以降)。Intel Mac は対象外
+    permissions:
+      contents: write   # Releases upload に必要
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build (.app bundle)
+        run: pyinstaller --noconfirm k-file.spec
+
+      - name: Pack distribution app (zip)
+        # ditto を使う: .app 内部の symlink / 実行権限を壊さず zip 化できる
+        # (普通の zip / Compress-Archive では Qt framework の symlink が壊れる)
+        run: ditto -c -k --sequesterRsrc --keepParent dist/k-file.app dist/k-file-macos.zip
+
+      - name: Upload artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: k-file-macos
+          path: dist/k-file-macos.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload to GitHub Release (tagged push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/k-file-macos.zip
           prerelease: ${{ contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}
