@@ -9,12 +9,31 @@ IPAゴシック同梱案 / Mac では描画モード「中間/なめらか」既
 このファイルは **Mac 実機側で開く新セッションの一次資料**。事務所の Mac では
 セッションを分けて作業するため、Linux 本機との引き継ぎはこのファイル + git 経由で行う。
 
-> **Mac セッションの AI への指示 (ユーザー依頼 2026-07-10)**: このファイルを
-> 読んだら、最初に下の「Mac 実機での入手・起動手順」を **そのままユーザーに
-> 番号付きで案内する** こと (ユーザーはプログラミング素人前提。artifact の
-> DL 場所は URL 付きで、`xattr` はコピペできる完成形コマンドで示す)。
-> 起動に成功したら「Phase 2 チェックリスト」を一緒に上から順に進め、結果
-> (特にフォントの見え方のスクリーンショット) を記録する。
+> **Mac セッションの AI への指示 (ユーザー依頼 2026-07-10 / 2026-07-15 更新)**:
+> このファイルを読んだら、最初にユーザーへ手順を **コピペできる完成形コマンドで
+> 番号付きに案内する** こと (ユーザーはプログラミング素人前提)。
+>
+> **2026-07-15 時点でまずやること = `v1.2.1` の手動導入 (これが最後の手動更新)。**
+> v1.2.1 で Mac のアプリ内自動アップデートを実装したが、その機能を積んだ版自体は
+> 自動では入らない。下記コマンドで 1 回だけ手動で入れれば、以後はアプリ内のバナー →
+> [更新...] のボタン 1 つで更新できる。**k-file を終了してから**実行:
+>
+> ```bash
+> mkdir -p ~/Applications && cd ~/Downloads
+> curl -L -O https://github.com/windom21-cpu/k-file/releases/download/v1.2.1/k-file-macos.zip
+> curl -L -O https://github.com/windom21-cpu/k-file/releases/download/v1.2.1/k-file-macos.zip.sha256
+> shasum -a 256 -c k-file-macos.zip.sha256          # → "k-file-macos.zip: OK" を確認
+> rm -rf ~/Applications/k-file.app
+> ditto -x -k k-file-macos.zip ~/Applications        # ditto で展開 (unzip では .app が壊れる)
+> xattr -dr com.apple.quarantine ~/Applications/k-file.app   # curl DL では通常不要だが念のため
+> open ~/Applications/k-file.app
+> ```
+>
+> 導入後の確認: ①ヘルプ → k-file について が **1.2.1** ②**事件タブに事件名が出る**
+> (v1.2.0 までは Mac で空タブだった。ADR-47) ③次の版が出たら「Phase 3 チェックリスト」
+> (アプリ内自動更新の実機確認) を一緒に上から進める。
+>
+> 初めて Mac に入れる場合や、上が使えない場合は下の「Mac 実機での入手・起動手順」を案内。
 
 ## 全体ロードマップ
 
