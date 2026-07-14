@@ -37,9 +37,24 @@ RELEASES_API_URL = (
 )
 
 # CI が upload する asset 名 (.github/workflows/build.yml と整合)
-ASSET_NAME = "k-file-windows.zip"
+ASSET_NAME = "k-file-windows.zip"          # 後方互換のため名前は据え置き
+ASSET_NAME_WINDOWS = ASSET_NAME
+ASSET_NAME_MACOS = "k-file-macos.zip"
+# 「別プラットフォーム向けの asset」集合。fallback で誤って掴まないための除外リスト
+# (Mac に Windows 版 zip を入れてしまう事故を構造的に防ぐ)
+_PLATFORM_ASSETS = {ASSET_NAME_WINDOWS, ASSET_NAME_MACOS}
 # zip の SHA256 を載せたサイドカー asset の拡張子 (= "<zip 名>.sha256")
 SHA256_ASSET_SUFFIX = ".sha256"
+
+
+def platform_asset_name(platform: str | None = None) -> str | None:
+    """この OS が DL すべき Release asset 名。対応外 OS (Linux dev) は None。"""
+    plat = platform if platform is not None else sys.platform
+    if plat == "win32":
+        return ASSET_NAME_WINDOWS
+    if plat == "darwin":
+        return ASSET_NAME_MACOS
+    return None
 
 
 @dataclass
@@ -58,6 +73,7 @@ class ReleaseInfo:
 def fetch_latest_release(
     timeout: float = 5.0,
     api_url: str = RELEASES_API_URL,
+    asset_name: str | None = None,
 ) -> ReleaseInfo | None:
     """GitHub Releases API を叩いて「最新の zip asset を持つ release」を返す。
 
@@ -66,7 +82,13 @@ def fetch_latest_release(
 
     通信失敗 (タイムアウト / オフライン / 403 rate limit 等) は **None を返す**
     (= 「黙って何もしない」)。起動時に毎回呼ぶので例外で落とさない。
+
+    asset_name: 掴む zip の名前。既定は実行中 OS 用 (Win → k-file-windows.zip /
+    Mac → k-file-macos.zip)。Release には両方が載るので、ここを間違えると別 OS の
+    ビルドを掴む。
     """
+    if asset_name is None:
+        asset_name = platform_asset_name() or ASSET_NAME
     try:
         req = urllib.request.Request(
             api_url,
@@ -96,7 +118,7 @@ def fetch_latest_release(
             continue
         version = tag.lstrip("v").lstrip("V")
         assets = release.get("assets") or []
-        asset = pick_zip_asset(assets)
+        asset = pick_zip_asset(assets, asset_name=asset_name)
         if asset is None:
             continue
         sha = pick_sha256_asset(assets, asset["name"])
@@ -112,22 +134,26 @@ def fetch_latest_release(
     return None
 
 
-def pick_zip_asset(assets: list[dict]) -> dict | None:
-    """Release の assets 配列から k-file 用 zip を 1 件選ぶ。
+def pick_zip_asset(assets: list[dict], asset_name: str = ASSET_NAME) -> dict | None:
+    """Release の assets 配列から「この OS 用」の zip を 1 件選ぶ。
 
     優先順位:
-      1. `ASSET_NAME` と完全一致 (現 CI が upload する名前)
-      2. `.zip` 拡張子の最初の asset (将来名前が変わっても fallback)
+      1. `asset_name` と完全一致 (現 CI が upload する名前)
+      2. `.zip` 拡張子の最初の asset (将来名前が変わっても拾えるよう fallback)
+         ただし **他 OS 向けの asset は除外** する。Release には Win/Mac 両方の zip が
+         載るため、素朴に「最初の .zip」を拾うと Mac に Windows 版を入れてしまう。
     """
     if not isinstance(assets, list):
         return None
     for a in assets:
-        if a.get("name") == ASSET_NAME and a.get("browser_download_url"):
+        if a.get("name") == asset_name and a.get("browser_download_url"):
             return a
     for a in assets:
+        name = a.get("name")
         if (
-            isinstance(a.get("name"), str)
-            and a["name"].lower().endswith(".zip")
+            isinstance(name, str)
+            and name.lower().endswith(".zip")
+            and name not in _PLATFORM_ASSETS   # 他 OS のビルドは掴まない
             and a.get("browser_download_url")
         ):
             return a
@@ -139,19 +165,25 @@ def pick_sha256_asset(assets: list[dict], zip_name: str) -> dict | None:
 
     優先順位:
       1. `<zip_name>.sha256` と完全一致 (CI が upload する名前)
-      2. `.sha256` 拡張子の最初の asset (fallback)
+      2. `.sha256` 拡張子の最初の asset (fallback)。ただし **他 OS の zip に紐づく
+         サイドカーは除外** する (掴むと必ず不一致 → fail-closed で更新が止まる)
     サイドカーが無い (= 旧 Release) 場合は None。照合は「あれば行う」保険扱い。
     """
     if not isinstance(assets, list):
         return None
     want = zip_name + SHA256_ASSET_SUFFIX
+    others = {
+        p + SHA256_ASSET_SUFFIX for p in _PLATFORM_ASSETS if p != zip_name
+    }
     for a in assets:
         if a.get("name") == want and a.get("browser_download_url"):
             return a
     for a in assets:
+        name = a.get("name")
         if (
-            isinstance(a.get("name"), str)
-            and a["name"].lower().endswith(SHA256_ASSET_SUFFIX)
+            isinstance(name, str)
+            and name.lower().endswith(SHA256_ASSET_SUFFIX)
+            and name not in others          # 他 OS の zip のハッシュは使わない
             and a.get("browser_download_url")
         ):
             return a
@@ -187,10 +219,13 @@ def find_newer_release(
     local_version: str,
     timeout: float = 5.0,
     api_url: str = RELEASES_API_URL,
+    asset_name: str | None = None,
 ) -> ReleaseInfo | None:
     """fetch + バージョン比較を 1 関数にまとめた便利関数。
     新版が無ければ None。"""
-    rel = fetch_latest_release(timeout=timeout, api_url=api_url)
+    rel = fetch_latest_release(
+        timeout=timeout, api_url=api_url, asset_name=asset_name
+    )
     if rel is None:
         return None
     if is_newer(rel.version, local_version):
@@ -356,6 +391,163 @@ def write_relaunch_script(
     script_path.parent.mkdir(parents=True, exist_ok=True)
     # UTF-8 BOM 付き (Windows PowerShell 5.1 が非 ASCII パスを正しく読むため)
     script_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig")
+    return script_path
+
+
+# ───────── macOS: .app バンドル差し替え型の updater ─────────
+#
+# Windows との違い (なぜ別実装が要るか):
+#   - 配布物が「フォルダ」ではなく `k-file.app` という 1 個のバンドル
+#   - 展開に `ditto` を使う (CI も `ditto -c -k` で固めている)。Python の zipfile や
+#     `unzip` では実行権限・拡張属性が落ちて .app が起動しなくなる
+#   - 検疫 (com.apple.quarantine) は「ブラウザ等が DL したファイル」に付く印。
+#     アプリ内 DL (QNetworkAccessManager) では付かないため、手動更新で必要だった
+#     `xattr -cr` が不要になる (念のためスクリプト側でも外す)
+#   - プロセス終了待ちは PID を直接見る (Get-Process 相当は不要、`kill -0` で足りる)
+
+
+def _sh_quote(value: str) -> str:
+    """sh の単一引用符リテラルに安全に埋める。"""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def mac_bundle_from_exe() -> Path | None:
+    """実行中の `k-file.app` バンドルのパス (Mac の配布版でのみ返る)。
+
+    sys.executable は `~/Applications/k-file.app/Contents/MacOS/k-file` なので、
+    `.app` で終わる祖先を探して返す。dev 実行 (`python -m src.main`) や Win/Linux
+    では None。
+    """
+    if not getattr(sys, "frozen", False) or sys.platform != "darwin":
+        return None
+    exe = Path(sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def write_mac_updater_script(
+    bundle_path: Path,
+    zip_path: Path,
+    pid: int,
+    script_path: Path | None = None,
+) -> Path:
+    """`k-file.app` を新版に差し替えて起動し直す **sh スクリプト** を書き出す。
+
+    bundle_path: 現在の k-file.app (例: `~/Applications/k-file.app`)
+    zip_path:    DL 済みの k-file-macos.zip
+    pid:         今動いている k-file のプロセス ID (これが消えるまで待つ)
+
+    動作:
+      1. pid が消えるまで wait (最大 30 秒)
+      2. zip を作業ディレクトリへ `ditto -x -k` で展開 (権限・署名を保つ)
+      3. 旧バンドルを `.old` へ退避 → 新バンドルを本来の場所へ move
+      4. 失敗したらロールバックして **旧版を起動し直す** (ユーザーを取り残さない)
+      5. 検疫属性を外して `open` で新版を起動 → `.old` と作業ディレクトリを削除
+    各ステップはスクリプトと同じフォルダの `updater.log` に追記する。
+    """
+    bundle_path = bundle_path.resolve()
+    zip_path = zip_path.resolve()
+    if script_path is None:
+        script_path = zip_path.with_name("apply_update.sh")
+    stage = zip_path.with_name("stage")
+    old = bundle_path.with_name(bundle_path.name + ".old")
+    new_bundle = stage / bundle_path.name
+
+    q_bundle = _sh_quote(str(bundle_path))
+    q_zip = _sh_quote(str(zip_path))
+    q_stage = _sh_quote(str(stage))
+    q_old = _sh_quote(str(old))
+    q_new = _sh_quote(str(new_bundle))
+
+    lines = [
+        "#!/bin/sh",
+        'LOG="$(dirname "$0")/updater.log"',
+        'log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $1" >> "$LOG"; }',
+        f"BUNDLE={q_bundle}",
+        f"ZIP={q_zip}",
+        f"STAGE={q_stage}",
+        f"OLD={q_old}",
+        f"NEW={q_new}",
+        f"PID={int(pid)}",
+        "log 'updater start'",
+        # 1. k-file の終了待ち (最大 30 秒 = 0.3s × 100)
+        "i=0",
+        'while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 100 ]; do',
+        "  sleep 0.3",
+        "  i=$((i+1))",
+        "done",
+        'log "wait done (i=$i)"',
+        # 2. 展開 (ditto: 実行権限・拡張属性・署名を保ったまま復元)
+        'rm -rf "$STAGE" "$OLD"',
+        'mkdir -p "$STAGE"',
+        'if ! ditto -x -k "$ZIP" "$STAGE" >>"$LOG" 2>&1; then',
+        "  log 'ERROR ditto failed'",
+        '  open "$BUNDLE"',       # 旧版のまま起動し直す
+        "  exit 1",
+        "fi",
+        'if [ ! -d "$NEW" ]; then',
+        "  log 'ERROR new bundle not found in zip'",
+        '  open "$BUNDLE"',
+        "  exit 1",
+        "fi",
+        # 3. 旧バンドル退避 → 新バンドル設置
+        'if ! mv "$BUNDLE" "$OLD"; then',
+        "  log 'ERROR cannot move old bundle (permission?)'",
+        '  open "$BUNDLE"',
+        "  exit 1",
+        "fi",
+        'if ! mv "$NEW" "$BUNDLE"; then',
+        "  log 'ERROR install failed, rolling back'",
+        '  mv "$OLD" "$BUNDLE"',
+        '  open "$BUNDLE"',
+        "  exit 1",
+        "fi",
+        # 4. 検疫属性を外す (アプリ内 DL では付かないはずだが念のため)
+        'xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null',
+        "log 'update applied OK'",
+        # 5. 新版を起動 → 後始末
+        'open "$BUNDLE"',
+        'rm -rf "$OLD" "$STAGE"',
+        "log 'updater end'",
+    ]
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script_path.chmod(0o755)
+    return script_path
+
+
+def write_mac_relaunch_script(
+    bundle_path: Path,
+    pid: int,
+    script_path: Path | None = None,
+) -> Path:
+    """k-file.app を「終了を待って起動し直す」だけの sh スクリプト (Mac 版)。
+
+    表示倍率 (QT_SCALE_FACTOR) 変更後の自動再起動用 = write_relaunch_script の Mac 版。
+    単一インスタンス IPC (ADR-20) と競合しないよう、旧プロセス消滅を待ってから開く。
+    """
+    bundle_path = bundle_path.resolve()
+    if script_path is None:
+        script_path = default_updates_dir() / "relaunch.sh"
+    q_bundle = _sh_quote(str(bundle_path))
+    lines = [
+        "#!/bin/sh",
+        f"BUNDLE={q_bundle}",
+        f"PID={int(pid)}",
+        "i=0",
+        'while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 100 ]; do',
+        "  sleep 0.3",
+        "  i=$((i+1))",
+        "done",
+        # -n = 新しいインスタンスを起こす (LaunchServices が「まだ起動中」と
+        # 誤認して無視するのを防ぐ)
+        'open -n "$BUNDLE"',
+    ]
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script_path.chmod(0o755)
     return script_path
 
 

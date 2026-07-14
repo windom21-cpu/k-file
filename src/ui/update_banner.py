@@ -16,6 +16,7 @@ dev 実行 (PyInstaller --onedir でない、`python -m src.main`) では instal
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -42,8 +43,11 @@ from src.core.updater import (
     default_updates_dir,
     find_newer_release,
     install_dir_from_exe,
+    mac_bundle_from_exe,
     parse_sha256_text,
+    platform_asset_name,
     sha256_of_file,
+    write_mac_updater_script,
     write_updater_script,
 )
 
@@ -126,7 +130,11 @@ class _CheckWorker(QObject):
 
     def run(self) -> None:
         try:
-            rel = find_newer_release(self._local_version)
+            # asset は実行中 OS 用を明示的に選ぶ (Release には Win/Mac 両方の
+            # zip が載っているため、既定任せにせず取り違えを防ぐ)
+            rel = find_newer_release(
+                self._local_version, asset_name=platform_asset_name()
+            )
         except Exception:        # noqa: BLE001 - 起動チェックは何があっても黙る
             rel = None
         self.done.emit(rel)
@@ -168,9 +176,9 @@ class UpdateManager(QObject):
 
     def check_async(self) -> None:
         """別スレッドで `find_newer_release` を走らせる。完了時にバナー更新。"""
-        if sys.platform != "win32":
-            # 自動アップデートは Windows 専用 (asset = k-file-windows.zip +
-            # PowerShell updater)。Mac 版は当面手動 DL で更新 (docs/MAC.md)。
+        if sys.platform not in ("win32", "darwin"):
+            # 配布対象は Win / Mac のみ。Linux は dev 環境なのでチェックしない
+            # (ローカル実行の版と Release の版を比べても意味がない)。
             return
         if self._thread is not None:
             return   # すでに走っている
@@ -368,6 +376,9 @@ class UpdateManager(QObject):
 
     def _on_download_complete(self, zip_path: Path) -> None:
         assert self._release is not None
+        if sys.platform == "darwin":
+            self._apply_mac(zip_path)
+            return
         install_dir = install_dir_from_exe()
         if install_dir is None:
             # dev 実行 (`python -m src.main`) では適用不可。DL 場所だけ通知。
@@ -430,4 +441,82 @@ class UpdateManager(QObject):
             )
             return
         # k-file 自身を終了 (updater は k-file.exe が消えるのを待ってから動く)
+        self._main_window.close()
+
+    # ───── 適用フロー (macOS: k-file.app をまるごと差し替え) ─────
+
+    def _apply_mac(self, zip_path: Path) -> None:
+        """DL した k-file-macos.zip で `k-file.app` を差し替えて起動し直す。
+
+        Windows 版との違いは実行系だけ (PowerShell → sh、フォルダ展開 → .app 差し替え)。
+        ブラウザ経由でないため検疫 (Gatekeeper) が付かず、手動更新で必要だった
+        `xattr -cr` は不要。
+        """
+        assert self._release is not None
+        bundle = mac_bundle_from_exe()
+        if bundle is None:
+            # dev 実行 (`python -m src.main`) では適用不可。DL 場所だけ通知。
+            QMessageBox.information(
+                self._main_window,
+                "DL 完了 (dev mode)",
+                (
+                    f"{self._release.tag} の zip を以下に保存しました:\n\n"
+                    f"{zip_path}\n\n"
+                    "dev 環境 (python -m src.main 起動) では自動適用は無効です。"
+                    "配布版 (k-file.app) でのみ自動的に再起動して新版に切替えます。"
+                ),
+            )
+            return
+        # 書き込めない場所 (/Applications 等) に置かれていると差し替えできない。
+        # k-file 終了後に updater が黙って失敗するのを避け、先に気づかせる。
+        if not os.access(str(bundle.parent), os.W_OK):
+            QMessageBox.warning(
+                self._main_window,
+                "更新できません",
+                (
+                    f"k-file.app の置き場所に書き込む権限がありません:\n\n"
+                    f"{bundle.parent}\n\n"
+                    "k-file.app を「ホーム > アプリケーション」フォルダなど、\n"
+                    "自分で書き込める場所に移してから再度お試しください。"
+                ),
+            )
+            return
+        ans = QMessageBox.question(
+            self._main_window,
+            "新版を適用",
+            (
+                f"{self._release.tag} の DL が完了しました。\n"
+                f"今すぐ再起動して適用しますか？\n\n"
+                f"(k-file を一度終了し、updater が k-file.app を新版に\n"
+                f" 差し替えてから起動します。所要 5-10 秒)"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            QMessageBox.information(
+                self._main_window,
+                "アップデート保留",
+                "次回起動時に再度通知します。",
+            )
+            return
+        script_path = write_mac_updater_script(bundle, zip_path, os.getpid())
+        try:
+            # 親 (k-file) が終了しても生き続けるよう新セッションで起動する。
+            # cwd はバンドルの外 (= /tmp) に固定 (差し替え対象を CWD にしない)。
+            subprocess.Popen(
+                ["/bin/sh", str(script_path)],
+                cwd=tempfile.gettempdir(),
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError as e:
+            QMessageBox.warning(
+                self._main_window,
+                "updater 起動失敗",
+                f"updater の起動に失敗しました:\n{e}\n\n"
+                f"手動適用してください:\n{script_path}",
+            )
+            return
+        # k-file 自身を終了 (updater は自分の PID が消えるのを待ってから動く)
         self._main_window.close()

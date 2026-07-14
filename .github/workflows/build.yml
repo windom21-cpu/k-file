@@ -151,16 +151,22 @@ jobs:
       - name: Build (.app bundle)
         run: pyinstaller --noconfirm k-file.spec
 
-      - name: Pack distribution app (zip)
+      - name: Pack distribution app (zip + SHA256)
         # ditto を使う: .app 内部の symlink / 実行権限を壊さず zip 化できる
-        # (普通の zip / Compress-Archive では Qt framework の symlink が壊れる)
-        run: ditto -c -k --sequesterRsrc --keepParent dist/k-file.app dist/k-file-macos.zip
+        # (普通の zip / Compress-Archive では Qt framework の symlink が壊れる)。
+        # アプリ内自動更新の整合性検証用に SHA256 サイドカーも出す (Win と同じ形式。
+        # update_banner._verify_checksum が展開前にこれと照合する)。
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/k-file.app dist/k-file-macos.zip
+          cd dist && shasum -a 256 k-file-macos.zip > k-file-macos.zip.sha256
 
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v4
         with:
           name: k-file-macos
-          path: dist/k-file-macos.zip
+          path: |
+            dist/k-file-macos.zip
+            dist/k-file-macos.zip.sha256
           if-no-files-found: error
           retention-days: 90
 
@@ -168,5 +174,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/k-file-macos.zip
+          files: |
+            dist/k-file-macos.zip
+            dist/k-file-macos.zip.sha256
           prerelease: ${{ contains(github.ref, '-beta.') || contains(github.ref, '-alpha.') }}

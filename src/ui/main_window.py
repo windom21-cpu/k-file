@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -47,7 +48,12 @@ from src.core.ui_scale import (
     step_down,
     step_up,
 )
-from src.core.updater import install_dir_from_exe, write_relaunch_script
+from src.core.updater import (
+    install_dir_from_exe,
+    mac_bundle_from_exe,
+    write_mac_relaunch_script,
+    write_relaunch_script,
+)
 from src.ui import clipboard_ops
 from src.infra.kfile_db import KFileDB
 from src.infra.recycle_bin import open_recycle_bin
@@ -567,11 +573,28 @@ class MainWindow(QMainWindow):
             )
 
     def _relaunch_app(self) -> bool:
-        """k-file を再起動する (配布 .exe のみ)。起動を仕掛けられたら True。
+        """k-file を再起動する (配布版のみ)。起動を仕掛けられたら True。
 
-        updater と同じ「旧プロセス消滅を待ってから起動」する PowerShell を隠しコンソール
-        で走らせ、自分は close() する (closeEvent がタブ/ウインドウサイズを保存 → 新版が復元)。
+        updater と同じ「旧プロセス消滅を待ってから起動」するスクリプト (Win: PowerShell
+        を隠しコンソールで / Mac: sh) を走らせ、自分は close() する (closeEvent が
+        タブ/ウインドウサイズを保存 → 新版が復元)。
         """
+        if sys.platform == "darwin":
+            bundle = mac_bundle_from_exe()
+            if bundle is None:
+                return False        # dev 実行 (python -m src.main)
+            try:
+                script_path = write_mac_relaunch_script(bundle, os.getpid())
+                subprocess.Popen(
+                    ["/bin/sh", str(script_path)],
+                    cwd=tempfile.gettempdir(),
+                    start_new_session=True,   # 親が消えても生き残る
+                    close_fds=True,
+                )
+            except OSError:
+                return False
+            self.close()
+            return True
         install_dir = install_dir_from_exe()
         if install_dir is None:
             return False
