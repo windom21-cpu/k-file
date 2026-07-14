@@ -16,6 +16,7 @@ M2: ダミーを廃し core/folder_scanner で実フォルダを読み込む。
 """
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -95,8 +96,12 @@ def _parse_case(path: Path) -> tuple[str, str]:
     タブ表示は「依頼者名 + 事件名」優先。case_code は K-SystemZ 連携キーなので
     タブ表示には出さない (タブのツールチップで案内、case_pane.add_case_tab 側)。
     括弧は半角 / 全角の両方を許容する (`(...)` / `（...）`)。
+
+    ⚠ macOS はファイル名を NFD (濁点分解: 「ダ」= 「タ」+ U+3099) で返すことが
+    あり、NFC のリテラル "文書フォルダ" と一致しない。照合前に必ず NFC 化する。
+    Windows/Linux は既に NFC なので正規化しても無影響。
     """
-    name = path.name
+    name = unicodedata.normalize("NFC", path.name)
     if "文書フォルダ" in name:
         idx = name.index("文書フォルダ")
         code = name[:idx]
@@ -123,6 +128,16 @@ def _parse_case(path: Path) -> tuple[str, str]:
     if len(parts) == 2:
         return parts[0], parts[1]
     return name, ""
+
+
+def _tab_label(code: str, name: str) -> str:
+    """タブに出す文字列。表示名が取れない命名のフォルダでも空タブにしない。
+
+    _parse_case が命名規則に当てはまらないと判断した場合、表示名は空になるが
+    (code = フォルダ名全体)、それをそのままタブに入れるとどの事件を開いている
+    のか分からない「文字のないタブ」になる。その場合は code を出す。
+    """
+    return name or code
 
 
 class _NameItem(QTableWidgetItem):
@@ -1577,7 +1592,7 @@ class CasePane(QWidget):
         # アクセスする。フル名はツールチップで確認可。
         self._case_paths.append(path)
         code, name = _parse_case(path)
-        new_idx = self.case_tabs.addTab(name)
+        new_idx = self.case_tabs.addTab(_tab_label(code, name))
         self.case_tabs.setTabToolTip(new_idx, f"{code}  {name}")
         # 初回の addTab は currentChanged を発火するので _load_case 自動呼出し。
         # 2 件目以降は自動選択されないので明示的に setCurrentIndex で発火させる。
@@ -1805,7 +1820,7 @@ class CasePane(QWidget):
         self._case_paths[idx] = new_path
         code, name = _parse_case(new_path)
         self.case_tabs.blockSignals(True)
-        self.case_tabs.setTabText(idx, name)
+        self.case_tabs.setTabText(idx, _tab_label(code, name))
         self.case_tabs.setTabToolTip(idx, f"{code}  {name}")
         self.case_tabs.blockSignals(False)
         self._load_case(idx)

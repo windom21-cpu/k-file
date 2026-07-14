@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,23 @@ def test_resolve_folder_prefix_match(mock_db: Path, tmp_path: Path):
     repo = CaseRepo(mock_db)
     p = repo.resolve_folder("R060200042")
     assert p == tmp_path / "事件" / "R060200042 山田太郎 損害賠償"
+    repo.close()
+
+
+def test_resolve_folder_matches_across_unicode_normalization(
+    mock_db: Path, tmp_path: Path
+):
+    """濁点の合成/分解が食い違っても引ける (macOS の readdir は NFD を返しうる)。
+
+    現行の case_code は ASCII のみだが、かなを含む名前でも Mac だけ引けなくなる
+    ことがないよう、両辺を NFC に揃えてから前方一致する。
+    """
+    doc_root = tmp_path / "事件"
+    (doc_root / "R060200045ダミー商事 立替金").mkdir()   # NFC でフォルダ作成
+    repo = CaseRepo(mock_db)
+    # 分解形 (NFD) の code で引いても同じフォルダに解決する
+    nfd_code = unicodedata.normalize("NFD", "R060200045ダミー商事")
+    assert repo.resolve_folder(nfd_code) == doc_root / "R060200045ダミー商事 立替金"
     repo.close()
 
 

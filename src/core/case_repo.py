@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,9 +168,13 @@ class CaseRepo:
             return None
         if not root.is_dir():
             return None
+        # macOS の readdir は名前を NFD (濁点分解) で返しうるため、両辺を NFC に
+        # 揃えてから前方一致する (現行の case_code は ASCII だけだが、K-SystemZ 側の
+        # 命名が将来かなを含んでも Mac だけ引けなくなることを防ぐ)
+        needle = unicodedata.normalize("NFC", case_code)
         try:
             for p in sorted(root.iterdir(), key=lambda x: x.name):
-                if p.is_dir() and p.name.startswith(case_code):
+                if p.is_dir() and unicodedata.normalize("NFC", p.name).startswith(needle):
                     return p
         except OSError:
             return None
