@@ -7,26 +7,16 @@
 
 ## 現状サマリ
 
-> ### 🔴 次回セッション冒頭でやること (2026-07-15 ユーザー依頼)
-> **Mac 機に `v1.2.1` を「最後の 1 回」手動で入れる案内を、まず最初にユーザーへ出すこと。**
-> v1.2.1 で Mac のアプリ内自動アップデートを実装したが、**その機能を積んだ版自体は
-> 自動では入らない** (今 Mac に載っている v1.2.0 には更新機構が無い)。この 1 回だけ
-> 手動で入れれば、以後の Mac 更新はアプリ内のバナー → [更新...] のボタン 1 つで済む。
+> ### ✅ Mac への `v1.2.1` 手動導入 完了 (2026-07-15 ユーザー確認)
+> 「最後の 1 回」の手動導入 (curl DL → `shasum` 照合 → `ditto` 展開 → `open`、
+> 手順は `docs/MAC.md` 冒頭) を Mac 実機で実施し **起動成功 + 事件タブに事件名が
+> 表示されることを確認** (v1.2.0 までの空タブ = NFD 問題の解消を実機で裏取り)。
+> これで **Mac も以後はアプリ内バナー → [更新...] のボタン 1 つで更新できる状態**。
 >
-> Mac のターミナルにそのまま貼れる完成形コマンド (**k-file を終了してから**実行):
-> ```bash
-> mkdir -p ~/Applications && cd ~/Downloads
-> curl -L -O https://github.com/windom21-cpu/k-file/releases/download/v1.2.1/k-file-macos.zip
-> curl -L -O https://github.com/windom21-cpu/k-file/releases/download/v1.2.1/k-file-macos.zip.sha256
-> shasum -a 256 -c k-file-macos.zip.sha256          # → "k-file-macos.zip: OK" を確認
-> rm -rf ~/Applications/k-file.app
-> ditto -x -k k-file-macos.zip ~/Applications        # ditto で展開 (unzip では .app が壊れる)
-> xattr -dr com.apple.quarantine ~/Applications/k-file.app   # curl DL では通常不要だが念のため
-> open ~/Applications/k-file.app
-> ```
-> 起動後、ヘルプ → k-file について が **1.2.1** になっていること、事件タブに事件名が
-> 出ていること (今回の修正) を確認してもらう。以後 v1.2.2 以降は Mac もアプリ内更新
-> (実機チェック項目は `docs/MAC.md` の Phase 3 チェックリスト)。
+> **🔴 次回セッションでやること**: 次の版 (v1.2.2 以降) を出したら、Mac 実機で
+> **アプリ内自動アップデートが実際に動くか**を `docs/MAC.md` の「Phase 3 チェック
+> リスト」に沿って確認する (バナー表示 → DL → `ditto` 差し替え → 再起動適用 →
+> Gatekeeper 警告なしで再起動、まで通しで。現状 updater は実装済・実機通し未確認)。
 
 - **現在地: `v1.2.1` 正式版を出荷 (2026-07-15)。Mac の①事件タブ文字化け (空タブ) 修正 ②アプリ内ワンクリック自動アップデート実装。** ①**タブに事件名が出ない** (Mac 実機報告) — 原因は **macOS の readdir が日本語ファイル名を NFC ではなく NFD (濁点分解: 「ダ」= 「タ」+ U+3099) で返す**こと。`_parse_case` が NFC リテラル `"文書フォルダ"` と照合していたため Mac だけ解析が丸ごと失敗し、case_code = フォルダ名全体 / 表示名 = 空 → 「枠だけで文字のないタブ」になっていた (パスバーにフォルダ名が丸ごと出る症状が決定打)。照合前に `unicodedata.normalize("NFC", ...)` する形に修正 (ADR-47、`5b13d35`)。同種の罠を持つ `case_repo.resolve_folder` も NFC 揃えで固め、`_tab_label` で「解析失敗でも空タブにしない」防御を追加 (Win でも潜在的に空タブになり得た経路を封鎖)。②**Mac 自動アップデート** (ADR-48、`7f24f30`) — Windows と同じ「起動時チェック → バナー → [更新...] → DL → 再起動して適用」を Mac でも有効化。実行系だけ差し替え (PowerShell → sh / フォルダ展開 → `.app` 差し替え / 展開は **`ditto -x -k`**、Python zipfile や unzip では実行権限・署名が落ちて .app が起動しなくなる)。**Gatekeeper の警告は出ない** — 検疫マークはブラウザ等の DL 品に付く印で、アプリ内 DL には付かないため、手動更新で必要だった `xattr -cr` が不要になる。Release に Win/Mac 両 zip が載るので asset は OS で選び分け (`platform_asset_name`)、fallback でも他 OS の zip / ハッシュを構造的に掴まない。CI の mac ジョブが `k-file-macos.zip.sha256` を出力・Release 同梱 (整合性検証が Mac でも効く)。副産物として **Mac の表示倍率変更後の自動再起動も修復** (従来は PowerShell を呼んで失敗し「再起動に失敗」警告)。テスト 188→204 (Mac 実機なしで壊れに気づけるよう、生成した sh を ditto/open/xattr の偽コマンドを PATH に置いて **実際に実行**し、差し替え・ロールバック・終了待ち・アポストロフィ入りパスを検証)。残: コード署名 (Win) / Mac 実機での Phase 3 チェック。詳細 §8 2026-07-15 セッション / `docs/MAC.md`。
 - **（前記録）`v1.2.0` 正式版を出荷 (2026-07-10)。macOS (Apple Silicon) 対応を同日中に Phase 1〜3 (フォント) まで進めて出荷、Mac 実機で業務投入開始。** 内訳: ①**Phase 1** = CI `build-mac` ジョブ + spec の darwin 分岐 (.app BUNDLE)、Mac では自動更新チェック無効化 (`70c0fc3`、Linux 側) ②**Phase 2** = Mac 実機 (事務所 Mac) でチェックリスト全項目クリア (ユーザー確認、詳細 `docs/MAC.md`)。見つかったバグは「**ウインドウ内メニューバーが macOS で非表示**」1 件のみ — 親なし QMenuBar は cocoa でグローバルメニューバー扱いになり、一度 native 化すると `setNativeMenuBar(False)` 後もレイアウトに乗らないため、生成時に親 widget を渡して修正 (`4b21694`、Win/Linux 無影響)。Win でフリーズ前科 (ADR-29/30) のフォルダも Mac ではプレビュー問題なし ③**Phase 3 前半 = IPAゴシック同梱フォールバック** (`856cbd8`) — **ユーザー決定 (2026-07-10) でフォント方針を一部更新: システムに MS Gothic があればそれを優先、無い環境だけ同梱 IPAゴシックへ代替** (常時 IPA ではない)。この Mac は Office 由来の MS Gothic が実在しフォールバック不発 = 表示は従来と同一 (崩れが無かった理由も判明)。`v1.2.0` を正式リリース (prerelease=false / repo の latest、**アセット 4 点 = 従来 3 点 + `k-file-macos.zip` を Release に初同梱**)。Win 機は v1.1.1 の自動更新バナーから v1.2.0 へ。テスト 184→188。残: Mac 用自動アップデート (現状は手動差し替え) / コード署名 (Win)。次は v1.2.0 で Mac + Win 業務並走。詳細 §8 2026-07-10 セッション / `docs/MAC.md`。
