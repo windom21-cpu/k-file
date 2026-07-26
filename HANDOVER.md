@@ -18,6 +18,7 @@
 > リスト」に沿って確認する (バナー表示 → DL → `ditto` 差し替え → 再起動適用 →
 > Gatekeeper 警告なしで再起動、まで通しで。現状 updater は実装済・実機通し未確認)。
 
+- **main 先行分 (未リリース、次版 v1.2.2 に同梱): F2 リネームの拡張子保護 (2026-07-27)。** ユーザー報告「F2 で名前を変更するとき拡張子を消してしまうことがあり、そのまま登録が完了して拡張子なしファイルができる」への対応。F2 確定時、新しい名前に**拡張子らしい suffix** (ピリオド + 英数字 1〜10 文字で英字を含む: `.pdf` `.7z` `.kphoto` 等) が無ければ**従前の拡張子を自動付加**する (`core/file_ops.ensure_suffix`)。あえて `.txt` 等へ変更した場合はそのまま尊重。`報告書v1.2` の `.2` や `判決.控訴審` の `.控訴審` は名前の一部と判定して従前の拡張子を補う。適用は F2 の 2 箇所 (事件ペイン / Inbox) の**ファイルのみ** — フォルダ / Shift+F2 は対象外。テスト 204→210。詳細 §8 2026-07-27 セッション
 - **現在地: `v1.2.1` 正式版を出荷 (2026-07-15)。Mac の①事件タブ文字化け (空タブ) 修正 ②アプリ内ワンクリック自動アップデート実装。** ①**タブに事件名が出ない** (Mac 実機報告) — 原因は **macOS の readdir が日本語ファイル名を NFC ではなく NFD (濁点分解: 「ダ」= 「タ」+ U+3099) で返す**こと。`_parse_case` が NFC リテラル `"文書フォルダ"` と照合していたため Mac だけ解析が丸ごと失敗し、case_code = フォルダ名全体 / 表示名 = 空 → 「枠だけで文字のないタブ」になっていた (パスバーにフォルダ名が丸ごと出る症状が決定打)。照合前に `unicodedata.normalize("NFC", ...)` する形に修正 (ADR-47、`5b13d35`)。同種の罠を持つ `case_repo.resolve_folder` も NFC 揃えで固め、`_tab_label` で「解析失敗でも空タブにしない」防御を追加 (Win でも潜在的に空タブになり得た経路を封鎖)。②**Mac 自動アップデート** (ADR-48、`7f24f30`) — Windows と同じ「起動時チェック → バナー → [更新...] → DL → 再起動して適用」を Mac でも有効化。実行系だけ差し替え (PowerShell → sh / フォルダ展開 → `.app` 差し替え / 展開は **`ditto -x -k`**、Python zipfile や unzip では実行権限・署名が落ちて .app が起動しなくなる)。**Gatekeeper の警告は出ない** — 検疫マークはブラウザ等の DL 品に付く印で、アプリ内 DL には付かないため、手動更新で必要だった `xattr -cr` が不要になる。Release に Win/Mac 両 zip が載るので asset は OS で選び分け (`platform_asset_name`)、fallback でも他 OS の zip / ハッシュを構造的に掴まない。CI の mac ジョブが `k-file-macos.zip.sha256` を出力・Release 同梱 (整合性検証が Mac でも効く)。副産物として **Mac の表示倍率変更後の自動再起動も修復** (従来は PowerShell を呼んで失敗し「再起動に失敗」警告)。テスト 188→204 (Mac 実機なしで壊れに気づけるよう、生成した sh を ditto/open/xattr の偽コマンドを PATH に置いて **実際に実行**し、差し替え・ロールバック・終了待ち・アポストロフィ入りパスを検証)。残: コード署名 (Win) / Mac 実機での Phase 3 チェック。詳細 §8 2026-07-15 セッション / `docs/MAC.md`。
 - **（前記録）`v1.2.0` 正式版を出荷 (2026-07-10)。macOS (Apple Silicon) 対応を同日中に Phase 1〜3 (フォント) まで進めて出荷、Mac 実機で業務投入開始。** 内訳: ①**Phase 1** = CI `build-mac` ジョブ + spec の darwin 分岐 (.app BUNDLE)、Mac では自動更新チェック無効化 (`70c0fc3`、Linux 側) ②**Phase 2** = Mac 実機 (事務所 Mac) でチェックリスト全項目クリア (ユーザー確認、詳細 `docs/MAC.md`)。見つかったバグは「**ウインドウ内メニューバーが macOS で非表示**」1 件のみ — 親なし QMenuBar は cocoa でグローバルメニューバー扱いになり、一度 native 化すると `setNativeMenuBar(False)` 後もレイアウトに乗らないため、生成時に親 widget を渡して修正 (`4b21694`、Win/Linux 無影響)。Win でフリーズ前科 (ADR-29/30) のフォルダも Mac ではプレビュー問題なし ③**Phase 3 前半 = IPAゴシック同梱フォールバック** (`856cbd8`) — **ユーザー決定 (2026-07-10) でフォント方針を一部更新: システムに MS Gothic があればそれを優先、無い環境だけ同梱 IPAゴシックへ代替** (常時 IPA ではない)。この Mac は Office 由来の MS Gothic が実在しフォールバック不発 = 表示は従来と同一 (崩れが無かった理由も判明)。`v1.2.0` を正式リリース (prerelease=false / repo の latest、**アセット 4 点 = 従来 3 点 + `k-file-macos.zip` を Release に初同梱**)。Win 機は v1.1.1 の自動更新バナーから v1.2.0 へ。テスト 184→188。残: Mac 用自動アップデート (現状は手動差し替え) / コード署名 (Win)。次は v1.2.0 で Mac + Win 業務並走。詳細 §8 2026-07-10 セッション / `docs/MAC.md`。
 - **（前記録）`v1.1.1` 正式版を出荷 (2026-07-08)。** 表示倍率の hotfix 版。v1.1.0 の「拡大した後 100% に戻して再起動しても 100% に戻らない」バグ (下記) を修正して `v1.1.1` を正式リリース (prerelease=false / repo の latest、3 アセット = zip / .sha256 / k-file-setup.exe、tag `v1.1.1` → CI test→build→Release)。**Win 実機確認も同日完了: ①この修正 (150%→100%→再起動で 100% 復帰) ②125〜200% のレイアウト崩れ — いずれも問題なし → v1.1.2 不要、v1.1 系クローズ。** 恒久の残課題はコード署名のみ。同日、将来の **Mac 対応の方向性を検討・確定** (mac ビルド一択 / WEB 版不採用 / フォントは IPAゴシック同梱案。着手未定、詳細 §8 2026-07-08 セッション)。次は v1.1.1 のまま業務並走。
@@ -36,7 +37,7 @@
 - UI 方針: Windows95/98 風 (**MS Gothic 12pt 埋め込みビットマップ** / 灰色 / beveled / 高密度業務アプリ感)。文字の描画は既定ビットマップ (ガタガタ)、表示→文字の描画 で 中間/なめらか に手動切替可 (ADR-31)。ウインドウは frameless だが Win95/98 風 **2 段 4 色 raised 外枠** (外側 #DFDFDF/#000000 + 内側 #FFFFFF/#808080) + 全辺/全角リサイズを自前実装 (ADR-32/33)
 - リポジトリ: https://github.com/windom21-cpu/k-file (public)
 - 配布: GitHub Releases (zip、`dist/k-file/` フォルダごと) + **自動アップデート機構 (案②)** で起動時通知 → 1 クリック DL → 再起動で新版反映
-- テスト: **204 件** (2026-07-01 に ui_scale 19 件追加、2026-07-08 に `_apply_ui_scale` の env クリア回帰 3 件追加、2026-07-10 に font_fallback 4 件追加、2026-07-15 に case_parse (NFD) 5 件 + case_repo NFC 1 件 + updater_mac 10 件追加。Win venv は symlink 2 件 skip) (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_updater_mac.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py` / `test_pane_layout.py` / `test_clipboard_ops.py` / `test_ui_scale.py` / `test_font_fallback.py` / `test_case_parse.py`)。Win venv は symlink 2 件 skip、Linux python3 / CI / Mac では全 204 緑 (Mac は symlink テストも走る)。⚠ `test_updater_mac.py` は生成した sh を実行するため **Windows では全件 skip** (/bin/sh が無い。CI の test ジョブは ubuntu なので必ず走る)。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。**CI は test ジョブ (ubuntu/offscreen で pytest) → 緑時のみ build (`needs: test`、commit `9f45d6e`)** = 壊れた版は自動配布されない。⚠ `test_ipc.py` は本番と同じ単一インスタンスキー (`k-file-instance-v1`) を使うため、**k-file 実機が起動中だと衝突して落ちる** (テスト分離の TODO)。⚠ **offscreen の自動テストでグローバル `QApplication.clipboard()` を触ると終了時 segfault** するため、clipboard 系は mime レベル (`build_file_mime`/`parse_file_mime`) で検証 (ADR-41)
+- テスト: **210 件** (2026-07-01 に ui_scale 19 件追加、2026-07-08 に `_apply_ui_scale` の env クリア回帰 3 件追加、2026-07-10 に font_fallback 4 件追加、2026-07-15 に case_parse (NFD) 5 件 + case_repo NFC 1 件 + updater_mac 10 件追加、2026-07-27 に file_ops `ensure_suffix` 6 件追加。Win venv は symlink 2 件 skip) (`tests/test_file_ops.py` / `test_undo_ops.py` / `test_inbox_watcher.py` / `test_case_repo.py` / `test_version.py` / `test_updater.py` / `test_updater_mac.py` / `test_preview.py` / `test_folder_scanner.py` / `test_font_strategy.py` / `test_resize_grips.py` / `test_ipc.py` / `test_pane_layout.py` / `test_clipboard_ops.py` / `test_ui_scale.py` / `test_font_fallback.py` / `test_case_parse.py`)。Win venv は symlink 2 件 skip、Linux python3 / CI / Mac では全 210 緑 (Mac は symlink テストも走る)。⚠ `test_updater_mac.py` は生成した sh を実行するため **Windows では全件 skip** (/bin/sh が無い。CI の test ジョブは ubuntu なので必ず走る)。`tests/conftest.py` で widget 対応 QApplication を 1 つ先に用意 (QGuiApplication との衝突で QWidget テストがクラッシュするのを回避)。ローカル実行: `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest`。**CI は test ジョブ (ubuntu/offscreen で pytest) → 緑時のみ build (`needs: test`、commit `9f45d6e`)** = 壊れた版は自動配布されない。⚠ `test_ipc.py` は本番と同じ単一インスタンスキー (`k-file-instance-v1`) を使うため、**k-file 実機が起動中だと衝突して落ちる** (テスト分離の TODO)。⚠ **offscreen の自動テストでグローバル `QApplication.clipboard()` を触ると終了時 segfault** するため、clipboard 系は mime レベル (`build_file_mime`/`parse_file_mime`) で検証 (ADR-41)
 
 ---
 
@@ -916,6 +917,32 @@ M5g の後、外枠の見た目を本物の Win95/98 窓枠に寄せ、ADR-29 �
 ---
 
 ## 8. 次にやること
+
+### 2026-07-27 セッション: F2 リネームの拡張子保護 (main 先行、リリース未)
+
+**この日やったこと** (WSL 側セッション、Win venv でテスト実行):
+
+- **F2 リネームの拡張子保護**: ユーザー報告「F2 で名前を変更するとき拡張子を消してしまうことがある。
+  そのまま登録が完了してしまい、拡張子なしのファイルができてしまう」
+  (F2 ダイアログは stem のみ初期選択だが、全選択して打ち直すと拡張子ごと消えたまま確定できた)
+  - 対応: F2 確定時、新しい名前に**拡張子らしい suffix が無ければ従前の拡張子を自動付加**。
+    「あえて拡張子を変更した」場合 (`.txt` 等が付いている) はそのまま尊重する (ユーザー指定の仕様)
+  - 「拡張子らしい」判定 = ピリオド + 英数字 1〜10 文字で英字を 1 つ以上含む。
+    `報告書v1.2` の `.2` や `判決.控訴審` の `.控訴審` は名前の一部とみなし、従前の拡張子を補う
+  - 実装: `core/file_ops.ensure_suffix` (Qt 非依存の純ロジック) + `main_window` の F2 確定 2 箇所
+    (`_on_rename_in_case` / `_on_rename_in_inbox`) で **is_dir でないときだけ** 適用。
+    フォルダの F2 / Shift+F2 (事件フォルダ rename) は対象外
+  - テスト 204→210 (`test_file_ops.py` に `ensure_suffix` 6 件)
+- リリースはまだ切っていない (main 先行)。**次版 v1.2.2 を切るときに同梱**され、Win は自動更新
+  バナー、Mac は初のアプリ内自動更新で配布される
+
+**残る課題** (前回から変わらず + 本件):
+1. **次版 (v1.2.2) を出したら Mac 実機で自動更新の Phase 3 チェック** (`docs/MAC.md`) — 本件の
+   拡張子保護を v1.2.2 として出せば、その更新自体が Phase 3 の確認材料になる
+2. **コード署名 (Windows)** — 恒久の残課題 (v1.0 から継続)
+3. 改善候補: `test_ipc` の実機衝突分離 / F12 投入履歴のサムネ版 / .icns アプリアイコン
+
+---
 
 ### 2026-07-15 セッション: Mac タブ空白バグ修正 + Mac アプリ内自動アップデート → `v1.2.1` 正式リリース
 
