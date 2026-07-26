@@ -1599,7 +1599,7 @@ class MainWindow(QMainWindow):
                 "F2: 名前変更する行が選択されていません", 3000
             )
             return
-        path, _is_dir = entry
+        path, is_dir = entry
 
         dlg = RenameDialog(
             original_name=path.name,
@@ -1611,6 +1611,9 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         new_name = dlg.chosen_name()
+        if not is_dir:
+            # うっかり拡張子ごと消して確定しても、従前の拡張子を補って完了する
+            new_name = file_ops.ensure_suffix(path.name, new_name)
 
         # ADR-23 (QBuffer 経由 in-memory PDF 読込み) でファイルロックは出ないため
         # 必須ではないが、rename 結果のプレビューに切替えるためにここで一旦
@@ -1737,6 +1740,9 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         new_name = dlg.chosen_name()
+        if not f.is_dir:
+            # うっかり拡張子ごと消して確定しても、従前の拡張子を補って完了する
+            new_name = file_ops.ensure_suffix(f.name, new_name)
 
         # ADR-23 後はファイルロック対策のための強制クリアは不要だが、rename 後の
         # プレビュー切替を確実にするため一旦クリアする (新パスは

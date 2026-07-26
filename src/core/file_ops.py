@@ -13,9 +13,10 @@ infra/kfile_db への履歴記録は呼び出し側 (UI 層) で行う — file_
 """
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 # Windows のファイル名で使えない文字。Linux/Mac でも一律禁止 (Dropbox 同期での
 # 事故防止)。改行・タブ等は別途 strip するので、ここでは「明示的な記号」のみ。
@@ -48,6 +49,37 @@ def validate_name(name: str) -> str | None:
     if name.endswith(" ") or name.endswith("."):
         return "ファイル名の末尾に空白やピリオドは使えません"
     return None
+
+
+# 「拡張子らしい」suffix: ピリオド + 英数字 1〜10 文字で、英字を 1 つ以上含む。
+# ".pdf" / ".7z" / ".kphoto" は拡張子、"報告書v1.2" の ".2" や "判決.控訴審" の
+# ".控訴審" は名前の一部とみなす。
+_EXTENSION_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+
+
+def _looks_like_extension(suffix: str) -> bool:
+    return bool(_EXTENSION_RE.match(suffix)) and any(c.isalpha() for c in suffix)
+
+
+def ensure_suffix(original_name: str, new_name: str) -> str:
+    """F2 rename でうっかり消えた拡張子を従前の名前から補って返す。
+
+    F2 のダイアログは stem のみ初期選択するが、全選択して打ち直すと拡張子ごと
+    消えたまま確定でき、拡張子なしファイルができてしまう。そこで:
+    - new_name に拡張子らしい suffix がある → あえて変更 (または維持) した
+      とみなしてそのまま返す
+    - 無い → original_name の拡張子を末尾に付加して返す
+
+    original_name 側に拡張子らしい suffix が無ければ何もしない (拡張子なし
+    ファイルの rename に影響させない)。フォルダに適用しないことは呼び出し側で
+    保証する。
+    """
+    orig_suffix = PurePath(original_name).suffix
+    if not _looks_like_extension(orig_suffix):
+        return new_name
+    if _looks_like_extension(PurePath(new_name).suffix):
+        return new_name
+    return new_name + orig_suffix
 
 
 def resolve_collision(dst_dir: Path, name: str) -> tuple[Path, bool]:

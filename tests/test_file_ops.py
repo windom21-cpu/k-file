@@ -11,6 +11,7 @@ import pytest
 
 from src.core.file_ops import (
     FORBIDDEN_CHARS,
+    ensure_suffix,
     inject,
     move,
     rename,
@@ -39,6 +40,45 @@ def test_validate_name_forbidden_chars(c):
 def test_validate_name_trailing_space_or_dot():
     assert validate_name("foo.pdf ") is not None
     assert validate_name("foo.pdf.") is not None
+
+
+# ─────────── ensure_suffix (F2 拡張子保護) ───────────
+
+def test_ensure_suffix_restores_dropped_extension():
+    # 全選択で打ち直して拡張子が消えた → 従前の拡張子を補う
+    assert ensure_suffix("受領書.pdf", "訴状副本") == "訴状副本.pdf"
+
+
+def test_ensure_suffix_keeps_deliberate_change():
+    # あえて別の拡張子を付けた → 尊重してそのまま
+    assert ensure_suffix("受領書.pdf", "受領書.txt") == "受領書.txt"
+    assert ensure_suffix("メモ.txt", "メモ.md") == "メモ.md"
+
+
+def test_ensure_suffix_unchanged_extension_is_noop():
+    assert ensure_suffix("受領書.pdf", "訴状副本.pdf") == "訴状副本.pdf"
+    # 大文字小文字違いも「拡張子あり」として維持
+    assert ensure_suffix("受領書.PDF", "訴状副本.pdf") == "訴状副本.pdf"
+
+
+def test_ensure_suffix_numeric_or_japanese_dot_is_not_extension():
+    # ".2" や ".控訴審" は名前の一部 → 従前の拡張子を補う
+    assert ensure_suffix("報告書.pdf", "報告書v1.2") == "報告書v1.2.pdf"
+    assert ensure_suffix("判決.pdf", "判決.控訴審") == "判決.控訴審.pdf"
+
+
+def test_ensure_suffix_original_without_extension_is_noop():
+    # 元が拡張子なし (フォルダや拡張子なしファイル) → 何も補わない
+    assert ensure_suffix("メモ", "備忘録") == "備忘録"
+    # 元の suffix が拡張子に見えない (".控訴審") 場合も補わない
+    assert ensure_suffix("判決.控訴審", "判決メモ") == "判決メモ"
+
+
+def test_ensure_suffix_short_and_alnum_extensions():
+    # ".7z" のような数字始まり + 英字を含む suffix は拡張子扱い
+    assert ensure_suffix("資料.7z", "証拠一式") == "証拠一式.7z"
+    assert ensure_suffix("資料.7z", "証拠一式.zip") == "証拠一式.zip"
+    assert ensure_suffix("写真.kphoto", "現場写真") == "現場写真.kphoto"
 
 
 # ─────────── resolve_collision ───────────
