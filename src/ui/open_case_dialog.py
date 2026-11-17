@@ -5,13 +5,13 @@ ksystemz.db (RO) を `core/case_repo.CaseRepo` 経由で検索し、選択した
 
 レイアウト:
   [TitleBar]
-  [検索:____________] [☑ 現在進行中のみ]
+  [検索:____________] [☐ 現在進行中のみ]
   [Code / 依頼者 / 種別 / 状態 / 事件名 のテーブル]
   [説明テキスト]                           [開く] [キャンセル]
 
 操作:
   - 検索ボックス変更で即時フィルタ (LIKE 部分一致)
-  - 「現在進行中のみ」OFF で 顧問・終了・諸件・不受任 も表示
+  - 既定は全件 (顧問・終了・諸件・不受任 も表示)。「現在進行中のみ」ON で絞り込み
   - ダブルクリック / Enter / 「開く」ボタンで accept、Esc / キャンセルで reject
 """
 from __future__ import annotations
@@ -35,6 +35,9 @@ from src.core.case_repo import CaseRecord, CaseRepo
 from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
 
+
+# 一覧に出す最大件数 (事件番号の新しい順)。超える分は検索で絞って探す。
+_SEARCH_LIMIT = 200
 
 class OpenCaseDialog(QDialog):
     """ksystemz.db を検索して事件 1 件を選ばせるモーダル。"""
@@ -72,7 +75,8 @@ class OpenCaseDialog(QDialog):
         self._search.textChanged.connect(self._reload)
         top.addWidget(self._search, stretch=1)
         self._active_only = QCheckBox("現在進行中のみ")
-        self._active_only.setChecked(True)
+        # 既定は全件表示。チェックで「現在進行中」に絞る (ユーザー要望 2026-11-17)
+        self._active_only.setChecked(False)
         self._active_only.toggled.connect(self._reload)
         top.addWidget(self._active_only)
         body.addLayout(top)
@@ -132,6 +136,7 @@ class OpenCaseDialog(QDialog):
             results = self._repo.search(
                 keyword=self._search.text().strip(),
                 active_only=self._active_only.isChecked(),
+                limit=_SEARCH_LIMIT,
             )
         except Exception as e:
             self._count_label.setText(f"検索失敗: {e}")
@@ -148,7 +153,13 @@ class OpenCaseDialog(QDialog):
             # row → CaseRecord を引けるよう UserRole に格納 (0 列)
             self._table.item(r, 0).setData(Qt.ItemDataRole.UserRole, rec)
             self._table.setRowHeight(r, 16)
-        self._count_label.setText(f"{len(results)} 件")
+        if len(results) >= _SEARCH_LIMIT:
+            # 全件既定だと上限に届きやすい。黙って切らず、絞り込みを促す
+            self._count_label.setText(
+                f"新しい順に {_SEARCH_LIMIT} 件まで表示 (検索で絞り込めます)"
+            )
+        else:
+            self._count_label.setText(f"{len(results)} 件")
 
         if results:
             self._table.setCurrentCell(0, 0)

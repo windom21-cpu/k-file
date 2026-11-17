@@ -98,7 +98,7 @@ K-SystemZ 側の改修を担当する。
 | Inbox → サブフォルダ投入 | `Alt+0〜9` / 右クリック / ストリップ `>N` / D&D |
 | 投入時の rename | **なし** (即時実行、リネームしたければ F2 で別途) |
 | 名前変更 | `F2` (Inbox / 中央 どちらでも) |
-| 削除 | `Del` / `F8` → OS ごみ箱 |
+| 削除 | `Del` / `F11` → OS ごみ箱 |
 | Undo (inject/move/rename) | `Ctrl+Z` (trash は Recycle Bin 右クリックで戻す) |
 | 投入履歴 | `F12` (各行から個別 Undo) |
 | 事件を開く | `Ctrl+O` (ksystemz.db を検索) |

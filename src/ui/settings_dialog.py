@@ -31,6 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.inbox_watcher import InboxSource
+from src.core.quick_launch import (
+    MAX_QUICK_FOLDERS,
+    QuickFolder,
+    load_quick_folders,
+    save_quick_folders,
+    slot_name,
+)
 from src.infra.kfile_db import KFileDB
 from src.ui._font_strategy import apply_bitmap_font_strategy
 from src.ui.title_bar import TitleBar
@@ -39,9 +46,6 @@ from src.ui.title_bar import TitleBar
 # settings table のキー名 (永続化に使う)
 KEY_INBOX_SOURCES = "inbox_sources_json"
 KEY_KSYSTEMZ_DB = "ksystemz_db_path"
-# クイック起動フォルダ (F6 / F7 で 1 発オープン、設定未指定なら disabled)
-KEY_QUICK_NOTES = "quick_notes_path"   # F6 = 雑記録
-KEY_QUICK_TEMP = "quick_temp_path"     # F7 = 一時保管
 
 
 def load_inbox_sources(db: KFileDB) -> list[InboxSource] | None:
@@ -86,8 +90,8 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
         # 9pt ダイアログサイズ。Inbox 監視先テーブルが既定 4 件 + α 追加可能で
-        # スクロール無しで見える程度の高さを確保 (クイック起動 2 行/各種パス含む)
-        self.resize(620, 700)
+        # スクロール無しで見える程度の高さを確保 (クイック起動の一覧/各種パス含む)
+        self.resize(620, 780)
 
         self._db = db
         self._sources: list[InboxSource] = list(current_sources)
@@ -159,31 +163,53 @@ class SettingsDialog(QDialog):
 
         body.addWidget(self._sep())
 
-        # ── クイック起動フォルダ (F6 / F7) ──
-        body.addWidget(self._h2("クイック起動フォルダ (F6 / F7 で 1 発オープン)"))
+        # ── クイック起動フォルダ (F6〜F9 / Shift+F キー) ──
+        body.addWidget(self._h2("クイック起動フォルダ (ファンクションキー 1 発で開く)"))
         body.addWidget(QLabel(
-            "事件外で常用するフォルダ。設定済なら下端ファンクションキーバーから\n"
-            "F6 / F7 でタブとして開ける (未設定セルはグレーアウト)。"
+            "事件外で常用するフォルダ。上から順に F6 / F7 / F8 / F9、5 件目からは\n"
+            "Shift+F6 … に割り当たります (↑↓ で並べ替え)。表示名は全角 4 文字程度が目安。"
         ))
-        qn_row = QHBoxLayout()
-        qn_row.addWidget(QLabel("F6  雑記録:"))
-        self._qn_edit = QLineEdit(db.get_setting(KEY_QUICK_NOTES, "") or "")
-        self._qn_edit.setPlaceholderText("(未設定)")
-        qn_row.addWidget(self._qn_edit, stretch=1)
-        qn_browse = QPushButton("参照...")
-        qn_browse.clicked.connect(lambda: self._on_browse_quick(self._qn_edit))
-        qn_row.addWidget(qn_browse)
-        body.addLayout(qn_row)
+        self._quick_table = QTableWidget(0, 3)
+        self._quick_table.setHorizontalHeaderLabels(["キー", "表示名", "フォルダ"])
+        self._quick_table.verticalHeader().setVisible(False)
+        self._quick_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self._quick_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self._quick_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked
+            | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        qhdr = self._quick_table.horizontalHeader()
+        qhdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        qhdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        qhdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._quick_table.setColumnWidth(0, 70)
+        self._quick_table.setColumnWidth(1, 100)
+        # ヘッダー + 5 行程度がスクロール無しで見える高さ
+        self._quick_table.setMinimumHeight(120)
+        body.addWidget(self._quick_table, stretch=1)
 
-        qt_row = QHBoxLayout()
-        qt_row.addWidget(QLabel("F7  一時保管:"))
-        self._qt_edit = QLineEdit(db.get_setting(KEY_QUICK_TEMP, "") or "")
-        self._qt_edit.setPlaceholderText("(未設定)")
-        qt_row.addWidget(self._qt_edit, stretch=1)
-        qt_browse = QPushButton("参照...")
-        qt_browse.clicked.connect(lambda: self._on_browse_quick(self._qt_edit))
-        qt_row.addWidget(qt_browse)
-        body.addLayout(qt_row)
+        quick_btn_row = QHBoxLayout()
+        q_add = QPushButton("+ 追加")
+        q_add.clicked.connect(self._on_add_quick)
+        quick_btn_row.addWidget(q_add)
+        q_del = QPushButton("− 削除")
+        q_del.clicked.connect(self._on_remove_quick)
+        quick_btn_row.addWidget(q_del)
+        q_up = QPushButton("↑ 上へ")
+        q_up.clicked.connect(lambda: self._on_move_quick(-1))
+        quick_btn_row.addWidget(q_up)
+        q_down = QPushButton("↓ 下へ")
+        q_down.clicked.connect(lambda: self._on_move_quick(1))
+        quick_btn_row.addWidget(q_down)
+        q_browse = QPushButton("選択行のフォルダを参照...")
+        q_browse.clicked.connect(self._on_browse_quick)
+        quick_btn_row.addWidget(q_browse)
+        quick_btn_row.addStretch(1)
+        body.addLayout(quick_btn_row)
 
         body.addWidget(self._sep())
 
@@ -226,6 +252,7 @@ class SettingsDialog(QDialog):
         esc.activated.connect(self.reject)
 
         self._populate_sources_table()
+        self._populate_quick_table(load_quick_folders(db.get_setting))
         # 本体と同じ MS Gothic ビットマップ戦略を適用 (新規ダイアログは
         # 別 widget tree なので main.py の初期適用範囲外)
         apply_bitmap_font_strategy(self, point_size=9)
@@ -314,11 +341,83 @@ class SettingsDialog(QDialog):
         if path:
             self._src_table.setItem(r, 1, QTableWidgetItem(path))
 
-    def _on_browse_quick(self, edit: QLineEdit) -> None:
-        start = edit.text() or str(Path.home())
+    # ───────── クイック起動フォルダ ─────────
+
+    def _populate_quick_table(self, folders: list[QuickFolder]) -> None:
+        self._quick_table.setRowCount(0)
+        for q in folders:
+            self._append_quick_row(q.label, q.path)
+
+    def _append_quick_row(self, label: str, path: str) -> int:
+        r = self._quick_table.rowCount()
+        self._quick_table.insertRow(r)
+        key_item = QTableWidgetItem(slot_name(r))
+        # キー列は並び順から自動で決まる (編集不可)
+        key_item.setFlags(key_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._quick_table.setItem(r, 0, key_item)
+        self._quick_table.setItem(r, 1, QTableWidgetItem(label))
+        self._quick_table.setItem(r, 2, QTableWidgetItem(path))
+        self._quick_table.setRowHeight(r, 18)
+        return r
+
+    def _renumber_quick_keys(self) -> None:
+        for r in range(self._quick_table.rowCount()):
+            item = self._quick_table.item(r, 0)
+            if item is not None:
+                item.setText(slot_name(r))
+
+    def _collect_quick_from_table(self) -> list[QuickFolder]:
+        out: list[QuickFolder] = []
+        for r in range(self._quick_table.rowCount()):
+            label_item = self._quick_table.item(r, 1)
+            path_item = self._quick_table.item(r, 2)
+            label = label_item.text().strip() if label_item is not None else ""
+            path = path_item.text().strip() if path_item is not None else ""
+            if not label and not path:
+                continue
+            out.append(QuickFolder(label=label or Path(path).name, path=path))
+        return out
+
+    def _on_add_quick(self) -> None:
+        if self._quick_table.rowCount() >= MAX_QUICK_FOLDERS:
+            return
+        path = QFileDialog.getExistingDirectory(
+            self, "クイック起動に登録するフォルダを選択", str(Path.home())
+        )
+        if not path:
+            return
+        # 表示名の既定 = フォルダ名 (あとからダブルクリックで編集)
+        r = self._append_quick_row(Path(path).name, path)
+        self._quick_table.setCurrentCell(r, 1)
+
+    def _on_remove_quick(self) -> None:
+        r = self._quick_table.currentRow()
+        if r >= 0:
+            self._quick_table.removeRow(r)
+            self._renumber_quick_keys()
+
+    def _on_move_quick(self, delta: int) -> None:
+        """選択行を上 (-1) / 下 (+1) へ。キー列は位置に固定で、中身だけ入れ替える。"""
+        r = self._quick_table.currentRow()
+        t = r + delta
+        if r < 0 or not 0 <= t < self._quick_table.rowCount():
+            return
+        for col in (1, 2):
+            a = self._quick_table.takeItem(r, col)
+            b = self._quick_table.takeItem(t, col)
+            self._quick_table.setItem(r, col, b)
+            self._quick_table.setItem(t, col, a)
+        self._quick_table.setCurrentCell(t, 1)
+
+    def _on_browse_quick(self) -> None:
+        r = self._quick_table.currentRow()
+        if r < 0:
+            return
+        cur = self._quick_table.item(r, 2)
+        start = (cur.text() if cur else "") or str(Path.home())
         path = QFileDialog.getExistingDirectory(self, "フォルダを選択", start)
         if path:
-            edit.setText(path)
+            self._quick_table.setItem(r, 2, QTableWidgetItem(path))
 
     def _on_browse_ksystemz(self) -> None:
         start = self._ks_edit.text() or str(Path.home())
@@ -336,8 +435,7 @@ class SettingsDialog(QDialog):
         new_sources = self._collect_sources_from_table()
         save_inbox_sources(self._db, new_sources)
         self._db.set_setting(KEY_KSYSTEMZ_DB, self._ks_edit.text().strip())
-        self._db.set_setting(KEY_QUICK_NOTES, self._qn_edit.text().strip())
-        self._db.set_setting(KEY_QUICK_TEMP, self._qt_edit.text().strip())
+        save_quick_folders(self._db.set_setting, self._collect_quick_from_table())
         self._db.set_setting(
             "auto_update_check_enabled",
             "1" if self._auto_update_cb.isChecked() else "0",

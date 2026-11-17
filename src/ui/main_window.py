@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from src.core import file_ops, undo_ops
 from src.core.case_repo import CaseRepo
+from src.core.quick_launch import SLOTS as QUICK_SLOTS, load_quick_folders, slot_name
 from src.core.ui_scale import (
     DEFAULT_SCALE,
     SCALE_STEPS,
@@ -75,8 +76,6 @@ from src.ui.preview_pane import PreviewPane
 from src.ui.rename_dialog import RenameDialog
 from src.ui.resize_grips import ResizeGrips
 from src.ui.settings_dialog import (
-    KEY_QUICK_NOTES,
-    KEY_QUICK_TEMP,
     SettingsDialog,
     load_inbox_sources,
 )
@@ -182,7 +181,11 @@ class MainWindow(QMainWindow):
 
         # ── ファンクションキーバー (DOS ファイラー風、ステータスバー直上) ──
         self.fn_bar = FunctionKeysBar()
-        self.fn_bar.set_slot(1, "ヘルプ", enabled=False)
+        # F1 はヘルプ用の空き枠だったが、ヘルプにキーは不要との判断でごみ箱に充てる
+        self.fn_bar.set_slot(
+            1, "ごみ箱", enabled=True,
+            tooltip="F1: OS のごみ箱を開く (削除したファイルの復元はここから)",
+        )
         self.fn_bar.set_slot(
             2, "名変更",
             enabled=True,
@@ -197,9 +200,11 @@ class MainWindow(QMainWindow):
             tooltip="F4: ウインドウ幅を半分にトグル (高さは維持 / もう一度で元に戻る)",
         )
         self.fn_bar.set_slot(5, "更新", enabled=True, tooltip="F5: Inbox を更新")
+        # F6〜F9 はクイック起動フォルダに充てる (_refresh_quick_slots)。削除は
+        # F8 から F11 へ移し、クイック起動が F6〜F9 に固まるようにした。
         self.fn_bar.set_slot(
-            8, "削除", enabled=True,
-            tooltip="F8/Del: 選択行を OS ごみ箱へ送る",
+            11, "削除", enabled=True,
+            tooltip="F11 / Del: 選択行を OS ごみ箱へ送る (Inbox / 中央 どちらでも)",
         )
         self.fn_bar.set_slot(
             10, "メニュー", enabled=False,
@@ -210,7 +215,7 @@ class MainWindow(QMainWindow):
         )
         self.fn_bar.keyTriggered.connect(self._on_fn_key)
         root_layout.addWidget(self.fn_bar)
-        # F6 雑記録 / F7 一時保管 はパス設定状況で動的に enable/label を切替
+        # クイック起動 (F6〜F9 / Shift 段) は設定の登録内容で動的に組み立てる
         self._refresh_quick_slots()
 
         self.setCentralWidget(root)
@@ -251,11 +256,24 @@ class MainWindow(QMainWindow):
         sc_half_width = QShortcut(QKeySequence("F4"), self)
         sc_half_width.activated.connect(self._toggle_half_width)
 
-        # F6 / F7: クイック起動フォルダ (雑記録 / 一時保管) をタブで開く
-        sc_quick_notes = QShortcut(QKeySequence("F6"), self)
-        sc_quick_notes.activated.connect(lambda: self._open_quick_folder("notes"))
-        sc_quick_temp = QShortcut(QKeySequence("F7"), self)
-        sc_quick_temp.activated.connect(lambda: self._open_quick_folder("temp"))
+        # F11: 選択行を OS ごみ箱へ (Inbox / 中央 のうち選択のある側。Del と同じ)
+        sc_delete = QShortcut(QKeySequence("F11"), self)
+        sc_delete.activated.connect(self._on_strip_delete)
+
+        # F1: OS のごみ箱を開く (編集メニュー「ごみ箱を開く」と同じ)
+        sc_trash = QShortcut(QKeySequence("F1"), self)
+        sc_trash.activated.connect(self._open_recycle_bin)
+
+        # クイック起動フォルダ: F6〜F9、続いて Shift+F6〜F9 … をタブで開く。
+        # 割当表は core/quick_launch.SLOTS (登録の並び順 = キーの並び順)。
+        # 未登録のキーも結線しておき、押したら「未登録」を案内する。
+        for idx in range(len(QUICK_SLOTS)):
+            sc_quick = QShortcut(QKeySequence(slot_name(idx)), self)
+            sc_quick.activated.connect(
+                lambda i=idx: self._open_quick_folder(i)
+            )
+        # Shift を押している間だけファンクションキーバーを Shift 段表示にする
+        QGuiApplication.instance().installEventFilter(self)
 
         sb = QStatusBar()
         sb.setSizeGripEnabled(False)
@@ -711,9 +729,16 @@ class MainWindow(QMainWindow):
                 "削除する行が選択されていません", 3000
             )
 
-    def _on_fn_key(self, k: int) -> None:
+    def _on_fn_key(self, k: int, shift: bool = False) -> None:
         """ファンクションキーバーのセルクリック (enabled なものだけ届く)。"""
-        if k == 2:
+        if (k, shift) in QUICK_SLOTS:
+            self._open_quick_folder(QUICK_SLOTS.index((k, shift)))
+        elif shift:
+            if k == 2:
+                self.case_pane.rename_current_case_folder()
+        elif k == 1:
+            self._open_recycle_bin()
+        elif k == 2:
             self._on_rename_in_case()
         elif k == 3:
             self._toggle_preview()
@@ -721,13 +746,9 @@ class MainWindow(QMainWindow):
             self._toggle_half_width()
         elif k == 5:
             self.inbox_pane.refresh()
-        elif k == 6:
-            self._open_quick_folder("notes")
-        elif k == 7:
-            self._open_quick_folder("temp")
-        elif k == 8:
-            # F8: 中央ペイン優先 (フォーカス問わず)。Inbox の削除は Del を推奨。
-            self.case_pane.delete_selected_row()
+        elif k == 11:
+            # 削除: F11 キーと同じ (選択のある側のペインを OS ごみ箱へ)
+            self._on_strip_delete()
         elif k == 12:
             self._show_history()
 
@@ -754,33 +775,50 @@ class MainWindow(QMainWindow):
             t.setCurrentCell(0, 0)
 
     def _refresh_quick_slots(self) -> None:
-        """F6 / F7 セルのラベルと enabled 状態を設定値から再構築。"""
-        notes = (self.db.get_setting(KEY_QUICK_NOTES, "") or "").strip()
-        temp = (self.db.get_setting(KEY_QUICK_TEMP, "") or "").strip()
-        notes_ok = bool(notes) and Path(notes).is_dir()
-        temp_ok = bool(temp) and Path(temp).is_dir()
-        self.fn_bar.set_slot(
-            6, "雑記録", enabled=notes_ok,
-            tooltip=f"F6: 雑記録フォルダを開く\n{notes}" if notes_ok else
-            "F6: 雑記録 (ツール→設定で パス指定すると有効)",
-        )
-        self.fn_bar.set_slot(
-            7, "一時保管", enabled=temp_ok,
-            tooltip=f"F7: 一時保管フォルダを開く\n{temp}" if temp_ok else
-            "F7: 一時保管 (ツール→設定で パス指定すると有効)",
-        )
+        """クイック起動セル (F6〜F9 / Shift 段) を登録内容から再構築。"""
+        folders = load_quick_folders(self.db.get_setting)
+        self._quick_folders = folders
+        for idx, (fn, shift) in enumerate(QUICK_SLOTS):
+            if idx >= len(folders):
+                self.fn_bar.clear_slot(fn, shift=shift)
+                continue
+            q = folders[idx]
+            key = slot_name(idx)
+            label = q.label or Path(q.path).name
+            ok = bool(q.path) and Path(q.path).is_dir()
+            if ok:
+                tip = f"{key}: {label} を開く\n{q.path}"
+            elif q.path:
+                tip = f"{key}: {label} (フォルダが見つかりません)\n{q.path}"
+            else:
+                tip = f"{key}: {label} (ツール→設定で フォルダ指定すると有効)"
+            self.fn_bar.set_slot(fn, label, enabled=ok, tooltip=tip, shift=shift)
+        # Shift 段を使っている時だけ、既存の Shift+F2 も Shift 段に見せる
+        if len(folders) > sum(1 for _, sh in QUICK_SLOTS if not sh):
+            self.fn_bar.set_slot(
+                2, "事件名変", enabled=True, shift=True,
+                tooltip="Shift+F2: 事件フォルダ名を変更",
+            )
+        else:
+            self.fn_bar.clear_slot(2, shift=True)
 
-    def _open_quick_folder(self, kind: str) -> None:
-        """F6/F7: 雑記録 or 一時保管 を case_pane のタブとして開く。"""
-        key = KEY_QUICK_NOTES if kind == "notes" else KEY_QUICK_TEMP
-        label = "雑記録" if kind == "notes" else "一時保管"
-        path_str = (self.db.get_setting(key, "") or "").strip()
-        if not path_str:
+    def _open_quick_folder(self, index: int) -> None:
+        """クイック起動 `index` 件目 (0 始まり) を case_pane のタブとして開く。"""
+        key = slot_name(index)
+        folders = getattr(self, "_quick_folders", [])
+        if index >= len(folders):
+            self.statusBar().showMessage(
+                f"{key}: クイック起動は未登録です (ツール→設定…)", 4000
+            )
+            return
+        q = folders[index]
+        label = q.label or key
+        if not q.path:
             self.statusBar().showMessage(
                 f"{label} のパスが未設定です (ツール→設定…)", 4000
             )
             return
-        path = Path(path_str)
+        path = Path(q.path)
         if not path.is_dir():
             self.statusBar().showMessage(
                 f"{label} のフォルダが見つかりません: {path}", 5000
@@ -950,7 +988,7 @@ class MainWindow(QMainWindow):
         self.inbox_pane.reload_sources(dlg.applied_sources())
         # ksystemz.db のキャッシュを破棄 (次回 Ctrl+O で新パスを再オープン)
         self._repo_cache = None
-        # F6/F7 クイック起動セルも再構築 (パス変更/追加を反映)
+        # クイック起動セルも再構築 (登録の追加・削除・並べ替えを反映)
         self._refresh_quick_slots()
         self.statusBar().showMessage("設定を保存しました", 4000)
 
@@ -1023,8 +1061,19 @@ class MainWindow(QMainWindow):
             self._half_width_prev = None
 
     def eventFilter(self, obj, e) -> bool:  # noqa: N802 (Qt override)
-        """Inbox / 中央テーブル の focus 切替で互いの選択を解除する。"""
-        if e.type() == QEvent.Type.FocusIn:
+        """Inbox / 中央テーブル の focus 切替で互いの選択を解除する。
+
+        アプリ全体のフィルタも兼ね、Shift の押下/解放でファンクションキーバーを
+        Shift 段表示に切り替える (他アプリへ切り替えたら必ず通常段へ戻す)。"""
+        et = e.type()
+        if et in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            if e.key() == Qt.Key.Key_Shift:
+                self.fn_bar.set_shift_active(
+                    et == QEvent.Type.KeyPress and self.isActiveWindow()
+                )
+        elif et == QEvent.Type.WindowDeactivate and obj is self:
+            self.fn_bar.set_shift_active(False)
+        if et == QEvent.Type.FocusIn:
             if obj is self.inbox_pane.table:
                 self.case_pane.table.clearSelection()
                 self.case_pane.table.setCurrentCell(-1, -1)
